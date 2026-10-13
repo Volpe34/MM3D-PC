@@ -1194,6 +1194,8 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    settings.TexturePacks.Azahar.LoadDirectory},
                   {"DumpDirectory",
                    settings.TexturePacks.Azahar.DumpDirectory},
+                  {"ButtonStyleDirectory",
+                   settings.TexturePacks.Azahar.ButtonStyleDirectory},
               }},
          }},
         {"Grass",
@@ -1445,6 +1447,19 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                 } else {
                     result.Value.TexturePacks.Azahar.LoadDirectory.clear();
                     result.Value.TexturePacks.Azahar.DumpDirectory.clear();
+                }
+                auto& packs = result.Value.TexturePacks.Azahar;
+                if (FindMember(*azahar, "ButtonStyleDirectory") != nullptr) {
+                    ReadScalar(*azahar, "ButtonStyleDirectory", packs.ButtonStyleDirectory,
+                               "Graphics.TexturePacks.Azahar.ButtonStyleDirectory", result);
+                }
+                // Older configurations chose the button style as the custom
+                // texture folder: it is a layer of its own now.
+                if (packs.ButtonStyleDirectory.empty() &&
+                    packs.LoadDirectory.find("button_styles") != std::string::npos) {
+                    packs.ButtonStyleDirectory = packs.LoadDirectory;
+                    packs.LoadDirectory.clear();
+                    packs.LoadCustomTextures = false;
                 }
             }
         }

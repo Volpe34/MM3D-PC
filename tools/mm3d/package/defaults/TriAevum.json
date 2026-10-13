@@ -1633,8 +1633,9 @@
             "Azahar": {
                 "DumpDirectory": "",
                 "DumpTextures": false,
-                "LoadCustomTextures": false,
-                "LoadDirectory": ""
+                "LoadCustomTextures": true,
+                "LoadDirectory": "data/textures",
+                "ButtonStyleDirectory": ""
             }
         },
         "Window": {

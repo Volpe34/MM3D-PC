@@ -7353,8 +7353,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               constexpr uint32_t kSpriteAddress = 0x18E00003U;  // odd: never a transfer output
               const auto texturePack =
                   Fast::Oot3d::GraphicsSettingsRuntime::Instance().Snapshot().TexturePacks.Azahar;
-              const auto style = Oot3dNativeGame::Mm3dButtonStyleFromSettings(texturePack.LoadCustomTextures,
-                                                                              texturePack.LoadDirectory);
+              const auto style = Oot3dNativeGame::Mm3dButtonStyleFromSettings(
+                  !texturePack.ButtonStyleDirectory.empty(), texturePack.ButtonStyleDirectory);
               // The game's own button bubble, from the player's RomFS.
               static const auto bubble = [&manifest]() -> std::optional<Oot3dNativeGame::Mm3dButtonRing> {
                 std::string ringError;

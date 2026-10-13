@@ -67,6 +67,16 @@ pull requests are welcome.
    desktop distribution has. It takes 10–40 minutes once.
 3. Play with `./Play.sh`.
 
+## Button prompts and texture packs
+
+- **Button prompts**: setup downloads HardDanX's Omni UI (Xbox, DualShock,
+  Nintendo, SNES colors). Choose one in **F1 → Button style**.
+- **Texture packs** (Azahar/Citra format, e.g. Henriko Magnifico's
+  [MM3D 4K pack](https://www.henrikomagnifico.com/zelda-majoras-mask-3d-4k)):
+  copy the contents of the pack's title folder into `data/textures`. Sub-folders
+  are fine, and packs with or without `pack.json` both work. The button style
+  is applied on top of the pack.
+
 ## If something goes wrong
 
 Open an issue and attach the logs:
@@ -154,6 +164,10 @@ It fails if any byte run of the game is found in the package.
   bottom-screen menus onto one screen was the main reference for the
   single-screen layout here....even if my own take of it was completely ASS.
 - **TopScreen**, the single-screen HUD design of TriAevum.
+- **[Omni UI for Project Restoration](https://gamebanana.com/mods/569317)** by
+  **HardDanX**, the Xbox / DualShock / Nintendo button prompt textures
+  (CC BY-NC-ND 4.0). Setup downloads them from GameBanana; they are not
+  redistributed here.
 - **Project Restoration** and the MM3D decompilation/randomizer projects, for
   game structure research.
 - **Nintendo** and **Grezzo**, who made the game. This is a fan project, not

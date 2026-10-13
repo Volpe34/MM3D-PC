@@ -164,6 +164,9 @@ struct AzaharTexturePackSettings {
     bool LoadCustomTextures = false;
     std::string LoadDirectory;
     std::string DumpDirectory;
+    // A button prompt style (resources/button_styles/<style>), loaded on top
+    // of the custom texture folder; empty = the game's own prompts.
+    std::string ButtonStyleDirectory;
 };
 
 struct TexturePackSettings {

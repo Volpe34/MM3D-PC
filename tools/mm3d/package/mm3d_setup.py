@@ -17,9 +17,13 @@ import json
 import lzma
 import os
 import shutil
+import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -78,6 +82,105 @@ def run(arguments: list[str], **kwargs) -> None:
     if completed.returncode != 0:
         fail(f"{Path(str(arguments[1])).name if len(arguments) > 1 else arguments[0]} failed "
              f"(exit {completed.returncode}); see the messages above.")
+
+
+# Omni UI for Project Restoration by HardDanX (CC BY-NC-ND 4.0), button prompt
+# textures. Downloaded from its GameBanana page, never redistributed here.
+OMNI_UI = ("https://gamebanana.com/dl/1679608",
+           "c512206ed5edbc00585b5477f588e63733b1deee167578f931bc2a50dcb20a21")
+OMNI_STYLES = {"Xbox": "Omni Xbox UI for PR", "DualShock": "Omni Dualshock UI for PR",
+               "Nintendo": "Omni Nintendo UI for PR", "Nintendo (SNES colors)": "Omni Nintendo Colored UI for PR"}
+OMNI_SKIP = {"tex1_512x512_F5B5C27302313096_13_mip0.png"}  # item icons with Project Restoration badges
+# 7-Zip 26.03 (github.com/ip7z/7zip) to read the RAR5 archive.
+SEVEN_ZIP = "https://github.com/ip7z/7zip/releases/download/26.03/"
+SEVEN_ZIP_FILES = {"7z2603-linux-x64.tar.xz": "dc99eff5008f1ab79bd7084c68513701547a808a89502bf4133683535ab3c695",
+                   "7zr.exe": "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d",
+                   "7z2603-x64.exe": "0859c524b8a63551848f0c246abddcb1d0b7b656b0fbfe879f8d85e61a9e6edd"}
+
+
+def download(url: str, sha256_hex: str, target: Path) -> None:
+    """Download url to target, checked against its pinned SHA-256."""
+    context = None
+    for attempt in range(4):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "mm3d-pc-setup"})
+            with urllib.request.urlopen(request, timeout=60, context=context) as response:
+                data = response.read()
+            if hashlib.sha256(data).hexdigest() == sha256_hex:
+                target.write_bytes(data)
+                return
+            print("  checksum mismatch, retrying", flush=True)
+        except OSError as error:
+            print(f"  download failed: {error}", flush=True)
+            if "CERTIFICATE_VERIFY_FAILED" in str(error) and context is None:
+                # No CA certificates: the pinned SHA-256 still guarantees the file.
+                context = ssl._create_unverified_context()
+                continue
+        time.sleep(3)
+    raise OSError(f"could not download {url}")
+
+
+def seven_zip(tools: Path) -> Path:
+    """A 7-Zip console program in tools/7zip (downloaded once)."""
+    folder = tools / "7zip"
+    program = folder / ("7z.exe" if sys.platform == "win32" else "7zzs")
+    if program.is_file():
+        return program
+    folder.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        for name in ("7zr.exe", "7z2603-x64.exe"):
+            download(SEVEN_ZIP + name, SEVEN_ZIP_FILES[name], folder / name)
+        # 7zr reads only .7z: unpack the full 7-Zip (7z.exe + 7z.dll) from its installer.
+        subprocess.run([str(folder / "7zr.exe"), "x", "-y", f"-o{folder}", str(folder / "7z2603-x64.exe"),
+                        "7z.exe", "7z.dll"], check=True, stdout=subprocess.DEVNULL)
+    else:
+        archive = folder / "7z.tar.xz"
+        download(SEVEN_ZIP + "7z2603-linux-x64.tar.xz", SEVEN_ZIP_FILES["7z2603-linux-x64.tar.xz"], archive)
+        with tarfile.open(archive) as source:
+            member = source.getmember("7zzs")
+            member.name = "7zzs"
+            source.extract(member, folder)
+        archive.unlink()
+        os.chmod(program, 0o755)
+    return program
+
+
+def install_button_styles(install: Path) -> None:
+    """Omni UI's Xbox, DualShock and Nintendo prompts in resources/button_styles."""
+    styles = install / "resources/button_styles"
+    if all((styles / name).is_dir() for name in OMNI_STYLES):
+        print("  already installed")
+        return
+    try:
+        tools = install / "tools"
+        sevenzip = seven_zip(tools)
+        with tempfile.TemporaryDirectory(dir=tools) as temporary:
+            temporary = Path(temporary)
+            archive = temporary / "omni.rar"
+            print("  downloading Omni UI for Project Restoration 1.3 by HardDanX (gamebanana.com/mods/569317)")
+            download(*OMNI_UI, archive)
+            subprocess.run([str(sevenzip), "x", "-y", f"-o{temporary / 'x'}", str(archive)], check=True,
+                           stdout=subprocess.DEVNULL)
+            for style, source in OMNI_STYLES.items():
+                target = styles / style
+                shutil.rmtree(target, ignore_errors=True)
+                for path in (temporary / "x" / source).rglob("*.png"):
+                    if path.name in OMNI_SKIP:
+                        continue
+                    destination = target / path.relative_to(temporary / "x" / source)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
+            readme = temporary / "x" / "ReadmeENG.txt"
+            if readme.is_file():
+                shutil.copy2(readme, styles / "Omni UI readme.txt")
+        (styles / "CREDITS.txt").write_text(
+            "Omni UI for Project Restoration 1.3 by HardDanX\n"
+            "https://gamebanana.com/mods/569317 - CC BY-NC-ND 4.0\n"
+            "Downloaded by setup from GameBanana; not redistributed with this port.\n", encoding="utf-8")
+        print(f"  installed: {', '.join(OMNI_STYLES)} (choose one in F1 > Button style)")
+    except (OSError, subprocess.CalledProcessError, KeyError, tarfile.TarError) as error:
+        # Optional: the game keeps the 3DS prompts.
+        print(f"  skipped ({error}); the game uses the 3DS button prompts")
 
 
 def default_jobs() -> int:
@@ -287,8 +390,18 @@ def main() -> int:
         return value
     data = relative(data)
     manifest.write_text(json.dumps(data, indent=1))
-    for folder in ("data/config", "data/savedata", "logs"):
+    step("Button prompt textures")
+    install_button_styles(install)
+    for folder in ("data/config", "data/savedata", "data/textures", "logs"):
         (install / folder).mkdir(parents=True, exist_ok=True)
+    guide = install / "data/textures/PUT TEXTURE PACKS HERE.txt"
+    if not guide.exists():
+        guide.write_text(
+            "Azahar/Citra texture packs for Majora's Mask 3D go in this folder: copy the\n"
+            "contents of the pack's title folder (load/textures/0004000000125500, or the\n"
+            "pack's PAL/JAP folder) here. Sub-folders are fine. Packs with or without\n"
+            "pack.json work. F1 > Texture packs: 'Load custom textures' must be on.\n"
+            "The button prompt style (F1 > Button style) is applied on top.\n", encoding="utf-8")
     for name in ("TriAevum.json", "oot3d_controls.json"):
         default = HERE / "defaults" / name
         if default.is_file() and not (install / "data/config" / name).exists():

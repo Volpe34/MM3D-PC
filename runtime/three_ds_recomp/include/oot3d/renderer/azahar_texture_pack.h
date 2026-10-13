@@ -18,6 +18,9 @@ struct AzaharTexturePackConfiguration {
     std::filesystem::path UserDirectory;
     std::filesystem::path LoadDirectory;
     std::filesystem::path DumpDirectory;
+    // A pack loaded on top of LoadDirectory, even when LoadCustomTextures is
+    // off (the button prompt style). Its textures win.
+    std::filesystem::path OverlayDirectory;
 
     bool operator==(const AzaharTexturePackConfiguration&) const = default;
 };

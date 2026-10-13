@@ -1722,6 +1722,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
                 graphicsSettings.TexturePacks.Azahar.LoadDirectory,
             .DumpDirectory =
                 graphicsSettings.TexturePacks.Azahar.DumpDirectory,
+            .OverlayDirectory =
+                graphicsSettings.TexturePacks.Azahar.ButtonStyleDirectory,
         });
         mAzaharConfiguredSettingsRevision =
             mFrameGraphicsSettingsRevision;

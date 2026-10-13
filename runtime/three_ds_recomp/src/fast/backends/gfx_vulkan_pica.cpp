@@ -60,6 +60,7 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <set>
 #include <vector>
 
 
@@ -2946,6 +2947,12 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     ? texture.MaxMipLevel : 0U;
                 record.CustomReplacementHash = replacementHash;
                 record.CustomReplacementReady = replacement;
+                static const bool replacementTrace =
+                    std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+                if (replacementTrace && replacement) {
+                    std::fprintf(stderr, "TEXTRACE replaced %016llX %ux%u\n",
+                                 static_cast<unsigned long long>(replacementHash), width, height);
+                }
                 CreateNativePicaTextureImage(
                     record, pixels, width, height, mipLevels, format);
                 return &record;
@@ -3184,6 +3191,17 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         }
         uint32_t uploadWidth = texture.Width;
         uint32_t uploadHeight = texture.Height;
+        static const bool textureTrace =
+            std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+        if (textureTrace) {
+            std::fprintf(stderr,
+                         "TEXTRACE create %ux%u fmt=%u mips=%u shadow=%d "
+                         "addr=%08X\n",
+                         texture.Width, texture.Height,
+                         static_cast<unsigned>(texture.NativeFormat),
+                         mipLevels, shadow2d ? 1 : 0,
+                         static_cast<unsigned>(texture.PhysicalAddress));
+        }
         ::Oot3d::Renderer::AzaharTextureResolveResult
             replacementResult;
         if (!shadow2d) {
@@ -4759,11 +4777,24 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                     "native PICA texture type is unsupported by sampler2D");
             }
             TextureRecord* live = ResolveSubstituteTexture(texture);
+            const char* livePath = live != nullptr ? "substitute" : nullptr;
             if (live == nullptr) {
                 live = ResolveTransferTexture(texture, draw.RenderTargetNamespace, draw.SubmissionId);
+                livePath = live != nullptr ? "transfer" : nullptr;
             }
             if (live == nullptr) {
                 live = ResolveLiveTargetTexture(texture, draw.RenderTargetNamespace, error);
+                livePath = live != nullptr ? "live" : nullptr;
+            }
+            static const bool textureTrace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+            if (textureTrace) {
+                static std::set<std::tuple<uint32_t, uint32_t, uint32_t, std::string>> seen;
+                const std::string path = livePath != nullptr ? livePath : "native";
+                if (seen.emplace(texture.PhysicalAddress, texture.Width, texture.NativeFormat, path).second) {
+                    std::fprintf(stderr, "TEXTRACE sample %s %ux%u fmt=%u addr=%08X\n", path.c_str(),
+                                 texture.Width, texture.Height, static_cast<unsigned>(texture.NativeFormat),
+                                 static_cast<unsigned>(texture.PhysicalAddress));
+                }
             }
             if (live != nullptr) {
                 textures[texture.Slot] = live;

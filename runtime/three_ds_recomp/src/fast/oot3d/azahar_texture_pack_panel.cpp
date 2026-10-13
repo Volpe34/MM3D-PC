@@ -61,45 +61,37 @@ const std::vector<std::filesystem::path>& ButtonStyles() {
 }
 
 bool DrawButtonStyle(AzaharTexturePackSettings& settings, AzaharTexturePackPanelState& state) {
+    (void)state;
     const auto& styles = ButtonStyles();
     if (styles.empty()) {
         return false;
     }
-    int current = -1;  // another pack
-    if (!settings.LoadCustomTextures) {
-        current = 0;
-    }
+    int current = settings.ButtonStyleDirectory.empty() ? 0 : -1;  // -1: another folder
     for (size_t index = 0; index < styles.size(); ++index) {
-        if (settings.LoadCustomTextures && settings.LoadDirectory == styles[index].string()) {
+        if (settings.ButtonStyleDirectory == styles[index].string()) {
             current = static_cast<int>(index) + 1;
         }
     }
     const std::string preview = current == 0 ? "Original (3DS)"
                                 : current > 0 ? styles[current - 1].filename().string()
-                                              : "Custom texture folder";
+                                              : settings.ButtonStyleDirectory;
     bool changed = false;
     ImGui::SeparatorText("Button prompts");
     if (ImGui::BeginCombo("Button style", preview.c_str())) {
         if (ImGui::Selectable("Original (3DS)", current == 0)) {
-            settings.LoadCustomTextures = false;
-            settings.LoadDirectory.clear();
+            settings.ButtonStyleDirectory.clear();
             changed = true;
         }
         for (size_t index = 0; index < styles.size(); ++index) {
             const std::string name = styles[index].filename().string();
             if (ImGui::Selectable(name.c_str(), current == static_cast<int>(index) + 1)) {
-                settings.LoadCustomTextures = true;
-                settings.LoadDirectory = styles[index].string();
+                settings.ButtonStyleDirectory = styles[index].string();
                 changed = true;
             }
         }
         ImGui::EndCombo();
     }
-    ImGui::TextDisabled("Omni UI (Project Restoration) textures; a few prompts may stay 3DS.");
-    if (changed) {
-        state.LoadDirectoryInput = settings.LoadDirectory;
-        state.BoundLoadDirectory = settings.LoadDirectory;
-    }
+    ImGui::TextDisabled("Omni UI by HardDanX (Project Restoration textures), on top of any texture pack.");
     return changed;
 }
 
