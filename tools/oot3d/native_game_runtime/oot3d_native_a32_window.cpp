@@ -3051,12 +3051,14 @@ PollNativeA32Input(Fast::Fast3dWindow &window,
 // Bombers' Notebook natively), ZR+X / ZR+Y use item slots I / II, ZR+A
 // plays the ocarina, ZL+Select shows/hides the minimap (returns true). They tap
 // the lower screen's buttons; the guest does not see these presses. In the
-// Items/Masks/Gear/Map screens Select closes the menu (as B); in the
-// Notebook Y switches between its events and schedule.
+// Items/Masks/Gear/Map screens Select closes the menu (as B). In the
+// Notebook (its buttons are touch only on the 3DS) the buttons of Project
+// Restoration, which the Omni UI prompts show: Y switches between events and
+// schedule, Select shows the event's place on the map, X sets the alarm.
 bool ApplyMm3dMenuButtons(Oot3dNativeGame::NativeA32InputFrame &frame,
                           int screen, uint32_t *previousButtons,
                           uint32_t titleActions, uint32_t *previousTitleActions,
-                          uint32_t menuCursor = 0) {
+                          uint32_t menuCursor = 0, bool notebookSchedule = false) {
   bool toggleMinimap = false;
   // The bindable touch-screen buttons (F1 > Controls): View, Ocarina, item
   // slots I/II, Masks, Notebook, minimap, then the Gear/Map/Items pages.
@@ -3125,11 +3127,14 @@ bool ApplyMm3dMenuButtons(Oot3dNativeGame::NativeA32InputFrame &frame,
     }
     buttons &= ~(start | select);
   } else if (screen == kNotebook) {
-    // Y: the Schedule / Events button (touch only on the 3DS).
     if ((pressed & y) != 0U) {
-      Oot3dNativeGame::RequestTriAevumShortcutTouch(292U, 226U);
+      Oot3dNativeGame::RequestTriAevumShortcutTouch(292U, 226U);        // Schedule / Events
+    } else if (notebookSchedule && (pressed & x) != 0U) {
+      Oot3dNativeGame::RequestTriAevumShortcutTouch(223U, 222U);        // Alarm
+    } else if (!notebookSchedule && (pressed & select) != 0U) {
+      Oot3dNativeGame::RequestTriAevumShortcutTouch(161U, 222U);        // the event's map
     }
-    buttons &= ~y;
+    buttons &= ~(y | x | select);
   } else if (screen == kGear || screen == kItems || screen == kMap ||
              screen == kMasks) {
     // Item slots I/II: on the 3DS the highlighted item or mask is dragged onto
@@ -4981,6 +4986,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   // parts of both screens (lower-screen pixels unless Upper) and whether the
   // frozen gameplay frame covers the upper screen first.
   constexpr int kMm3dFileSelectScreen = 100;  // not in the play state's list
+  // The Notebook's schedule view (its lower screen MenuSchedule).
+  constexpr int kMm3dScheduleScreen = 102;
   struct Mm3dMenuLayout {
     std::vector<Oot3dNativeGame::TriAevumHudPart> Parts;
     bool FrozenBackground = false;
@@ -5025,6 +5032,16 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           Part{88.0F, 0.0F, 232.0F, 64.0F, 0.69F, 0.15F, 0.40F},
           Part{0.0F, 70.0F, 320.0F, 200.0F, -0.012F, 0.34F, 0.64F},
           Part{0.0F, 200.0F, 320.0F, 240.0F, -0.012F, -0.01F, 0.64F},
+      }, false}},
+      // The Notebook's schedule: the three days on the left as the event
+      // list; on the right the selected day's hours (where Tatl sets the
+      // alarm), the character's or event's card under them and the buttons.
+      {kMm3dScheduleScreen, {{
+          Part{386.0F, 40.0F, 387.0F, 110.0F, 0.0F, 0.0F, 1.0F, true, false, true},
+          Part{0.0F, 0.0F, 400.0F, 30.0F, 0.0F, 0.0F, 1.0F, true, true},
+          Part{0.0F, 32.0F, 392.0F, 238.0F, 0.0F, 0.135F, 1.08F, true},
+          Part{0.0F, 0.0F, 320.0F, 200.0F, -0.012F, 0.15F, 0.66F},
+          Part{0.0F, 200.0F, 320.0F, 240.0F, -0.012F, -0.01F, 0.66F},
       }, false}},
       // Gear: the panel, its column and tabs over the (live) world.
       {3, {{
@@ -5882,8 +5899,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         insetLayout = lowerDrawing && (mm3dScreen == 7 || lowerDialog);
         // Items and Masks are composed on one screen.
         static const bool mergedMenus = std::getenv("TRIAEVUM_SIDE_BY_SIDE_MENUS") == nullptr;
-        const auto menuLayoutFound =
-            mm3dMenuLayouts.find(fileSelectShown ? kMm3dFileSelectScreen : mm3dScreen);
+        const bool scheduleShown =
+            mm3dScreen == 2 && std::find(lowerLayouts.begin(), lowerLayouts.end(), "MenuSchedule") != lowerLayouts.end();
+        const auto menuLayoutFound = mm3dMenuLayouts.find(
+            fileSelectShown ? kMm3dFileSelectScreen : scheduleShown ? kMm3dScheduleScreen : mm3dScreen);
         singleScreen.MergedMenu = mergedMenus && lowerDrawing &&
                                   menuLayoutFound != mm3dMenuLayouts.end() &&
                                   screenLayout == Oot3dNativeGame::TriAevumScreenLayout::SingleScreen;
@@ -5981,10 +6000,19 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           singleScreen);
       // The Notebook's backdrop is one column of its list panel stretched:
       // while its page still slides in that column is the page (a yellow
-      // screen for a few frames). Only once it is interactive (its cursor).
-      if (mergedMenuScreen == 2 &&
-          std::none_of(shownLowerLayouts.begin(), shownLowerLayouts.end(),
-                       [](const std::string &name) { return name.rfind("Cursor", 0) == 0; })) {
+      // screen for a few frames). Only once it is interactive (its cursor):
+      // from then on it stays, also while the cursor is rebuilt for two
+      // frames on each move in the list (the backdrop flickered).
+      static bool notebookInteractive = false;
+      if (mergedMenuScreen != 2 && mergedMenuScreen != kMm3dScheduleScreen) {
+        notebookInteractive = false;
+      } else if (std::any_of(shownLowerLayouts.begin(), shownLowerLayouts.end(),
+                             [](const std::string &name) {
+                               return name.rfind("Cursor", 0) == 0 || name == "MenuSchedule";
+                             })) {
+        notebookInteractive = true;
+      }
+      if (mergedMenuScreen == 2 && !notebookInteractive) {
         screenPlacements.UpperFills.clear();
       }
       if (screenPlacements.Upper.has_value()) {
@@ -6287,7 +6315,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         if (foreignTitle && manifest->Title.Id == "mm3d" &&
             ApplyMm3dMenuButtons(inputFrame, mm3dRestoration ? -1 : mm3dScreen,
                                  &mm3dPreviousButtons, physicalInputFrame.TitleActions,
-                                 &mm3dPreviousTitleActions, mm3dMenuCursor)) {
+                                 &mm3dPreviousTitleActions, mm3dMenuCursor,
+                                 std::find(shownLowerLayouts.begin(), shownLowerLayouts.end(),
+                                           "MenuSchedule") != shownLowerLayouts.end())) {
           minimapShown = !minimapShown;
           Oot3dNativeGame::SetTriAevumHudParts(mm3dHudParts(minimapShown));
         }

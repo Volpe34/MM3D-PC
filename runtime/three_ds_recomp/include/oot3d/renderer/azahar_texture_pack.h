@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -21,6 +22,10 @@ struct AzaharTexturePackConfiguration {
     // A pack loaded on top of LoadDirectory, even when LoadCustomTextures is
     // off (the button prompt style). Its textures win.
     std::filesystem::path OverlayDirectory;
+    // Memory for decoded custom textures; Preload decodes the pack ahead of
+    // use (in the background, up to that limit).
+    uint64_t CacheBudgetBytes = 2048ULL * 1024ULL * 1024ULL;
+    bool Preload = false;
 
     bool operator==(const AzaharTexturePackConfiguration&) const = default;
 };
@@ -67,6 +72,8 @@ struct AzaharTexturePackStatus {
     size_t DumpedTextures = 0;
     size_t PendingDumps = 0;
     size_t PendingLoads = 0;
+    size_t PreloadsLeft = 0;
+    uint64_t CacheBytes = 0;
     size_t FailedLoads = 0;
     size_t UnsupportedTextureFiles = 0;
     std::filesystem::path LoadDirectory;
@@ -114,6 +121,9 @@ class AzaharTexturePackRuntime final {
     // Intended for deterministic tests and orderly shutdown, not frame code.
     void WaitForPendingDumps();
     void WaitForPendingLoads();
+    // Frame code: waits for the queued custom textures (decoded in parallel),
+    // at most timeout; true when none is left.
+    bool WaitForPendingLoadsFor(std::chrono::milliseconds timeout);
 
   private:
     class Impl;

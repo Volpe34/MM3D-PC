@@ -1635,7 +1635,10 @@
                 "DumpTextures": false,
                 "LoadCustomTextures": true,
                 "LoadDirectory": "data/textures",
-                "ButtonStyleDirectory": ""
+                "ButtonStyleDirectory": "",
+                "WaitForCustomTextures": true,
+                "TextureMemoryMB": 2048,
+                "PreloadCustomTextures": false
             }
         },
         "Window": {

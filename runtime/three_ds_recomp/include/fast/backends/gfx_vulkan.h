@@ -935,6 +935,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mDirectionalShadowSchedulePlan;
     uint64_t mFrameAzaharTextureGeneration = 0;
     uint64_t mCustomTextureUploadBytesThisFrame = 0;
+    // Custom textures wait for their decode (no pop-in): no upload budget.
+    bool mCustomTextureWaitThisFrame = false;
     std::map<std::vector<uint8_t>, Renderer3ds::PicaDevicePipelineRecord> mNativePicaPipelines;
     uint64_t mNextPicaPipelineId = 1;
     uint64_t mNativePicaVulkanPipelineCreations = 0;

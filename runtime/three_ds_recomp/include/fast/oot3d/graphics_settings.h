@@ -167,6 +167,13 @@ struct AzaharTexturePackSettings {
     // A button prompt style (resources/button_styles/<style>), loaded on top
     // of the custom texture folder; empty = the game's own prompts.
     std::string ButtonStyleDirectory;
+    // Hold a frame until the custom textures it starts loading are decoded
+    // (no low-resolution textures popping in when an area appears).
+    bool WaitForCustomTextures = true;
+    // Memory for decoded custom textures (MB) and decoding the whole pack
+    // in the background ahead of use (up to that memory).
+    int TextureMemoryMB = 2048;
+    bool PreloadCustomTextures = false;
 };
 
 struct TexturePackSettings {

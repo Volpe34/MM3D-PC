@@ -35,6 +35,7 @@
 #include "oot3d/renderer/azahar_texture_pack.h"
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -1724,12 +1725,32 @@ void GfxRenderingAPIVulkan::StartFrame() {
                 graphicsSettings.TexturePacks.Azahar.DumpDirectory,
             .OverlayDirectory =
                 graphicsSettings.TexturePacks.Azahar.ButtonStyleDirectory,
+            .CacheBudgetBytes =
+                static_cast<uint64_t>(std::max(256, graphicsSettings.TexturePacks.Azahar.TextureMemoryMB)) << 20U,
+            .Preload = graphicsSettings.TexturePacks.Azahar.PreloadCustomTextures,
         });
         mAzaharConfiguredSettingsRevision =
             mFrameGraphicsSettingsRevision;
     }
     mFrameAzaharTextureGeneration =
         azaharTexturePacks.Generation();
+    // The custom textures the previous frame started decoding (a new area's,
+    // in parallel) are waited for, so they appear at once instead of over
+    // half a second; that frame drew them once with the original textures.
+    mCustomTextureWaitThisFrame =
+        graphicsSettings.TexturePacks.Azahar.WaitForCustomTextures &&
+        graphicsSettings.TexturePacks.Azahar.LoadCustomTextures;
+    if (mCustomTextureWaitThisFrame) {
+        static const bool trace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+        const auto waitStart = std::chrono::steady_clock::now();
+        const size_t pending = trace ? azaharTexturePacks.Snapshot().PendingLoads : 0U;
+        azaharTexturePacks.WaitForPendingLoadsFor(std::chrono::milliseconds(3000));
+        if (trace && pending != 0U) {
+            std::fprintf(stderr, "TEXWAIT frame %llu: %zu textures, %.1f ms\n",
+                         static_cast<unsigned long long>(mFrameCounter), pending,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count());
+        }
+    }
     const char* taaEnvironment = std::getenv("OOT3D_GRAPHICS_TAA");
     const char* motionEnvironment = std::getenv("OOT3D_GRAPHICS_MOTION");
     const Oot3d::AntiAliasingFrameCapabilities aaCapabilities{

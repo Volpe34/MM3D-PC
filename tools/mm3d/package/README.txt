@@ -37,11 +37,17 @@ Play
   The first minutes may stutter briefly while shaders are compiled for your
   GPU; they are kept for the next sessions.
 
+HD texture packs
+  Copy an Azahar/Citra texture pack (the contents of its title folder) into
+  data\textures. With enough RAM, turn on F1 > Textures > Preload custom
+  textures and raise Texture memory (a 4K pack needs about 6.5 GB).
+
 Controls (controller, Xbox names; rebind in F1 > Controls)
   A/B = A/B, Y = 3DS X, X = 3DS Y, LT = target (L), RT = shield (R),
   LB/RB = item slots, right stick = camera, R3 = first-person view,
   D-pad up = ocarina, D-pad down = masks, L3 = minimap,
   Back = items, Start = Bombers' Notebook, Start+A = settings, Start+B closes them.
+  In the Notebook: X = schedule/events, Y = set the alarm, Back = the event's map.
 
 If something goes wrong
   Send logs\setup.log and logs\setup_download.log (setup problems) or

@@ -83,8 +83,11 @@ def main() -> int:
     arguments = [sys.executable, str(ROOT / "setup/TriAevum/tools/mm3d/package/mm3d_setup.py"),
                  "--install", str(ROOT), "--target", "linux",
                  "--cxx", str(zig_dir / "zig-cxx"), "--ar", str(zig_dir / "zig-ar")]
-    if len(sys.argv) > 1:
-        arguments += ["--rom", sys.argv[1]]
+    # ./Setup.sh [rom] [--no-shader-tour] [--jobs N]
+    rest = sys.argv[1:]
+    if rest and not rest[0].startswith("--"):
+        arguments += ["--rom", rest.pop(0)]
+    arguments += rest
     if subprocess.run(arguments).returncode != 0:
         print("\nSETUP FAILED. Send logs/setup.log to get help.")
         return 1

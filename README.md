@@ -90,7 +90,11 @@ new.
   [MM3D 4K pack](https://www.henrikomagnifico.com/zelda-majoras-mask-3d-4k)):
   copy the contents of the pack's title folder into `data/textures`. Sub-folders
   are fine, and packs with or without `pack.json` both work. The button style
-  is applied on top of the pack.
+  is applied on top of the pack. A new area waits a moment for its textures
+  (no low-resolution pop-in). With enough RAM, turn on **F1 → Textures →
+  Preload custom textures** and raise **Texture memory** (the 4K pack needs
+  about 6.5 GB): the whole pack is decoded in the background and areas
+  appear without any wait.
 
 ## If something goes wrong
 
@@ -121,6 +125,7 @@ F1 → Controls.
 | Minimap | L3 |
 | Items | Back |
 | Bombers' Notebook | Start |
+| Notebook: schedule / events, alarm, event's map | X / Y / Back |
 | Settings (open / close) | Start+A / Start+B |
 
 ## How it works

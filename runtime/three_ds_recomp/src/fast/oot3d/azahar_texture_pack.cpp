@@ -497,7 +497,22 @@ struct LoadJob {
     uint64_t Hash = 0;
     uint64_t Generation = 0;
     IndexedTexture Texture;
+    bool Preload = false;  // decoded ahead of use (background, lower priority)
 };
+
+// The decoded size of a PNG from its header (no decode): width x height x 4.
+uint64_t PngDecodedBytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::array<unsigned char, 24> header{};
+    if (!input.read(reinterpret_cast<char*>(header.data()), header.size())) {
+        return 0U;
+    }
+    const auto be32 = [&](size_t at) {
+        return (uint32_t{header[at]} << 24U) | (uint32_t{header[at + 1]} << 16U) |
+               (uint32_t{header[at + 2]} << 8U) | uint32_t{header[at + 3]};
+    };
+    return uint64_t{be32(16)} * be32(20) * 4U;
+}
 
 } // namespace
 
@@ -536,8 +551,13 @@ class AzaharTexturePackRuntime::Impl {
   public:
     Impl() {
         // Constructor-body startup guarantees every queue and stop flag exists
-        // before WorkerMain can inspect them.
-        mWorker = std::thread([this] { WorkerMain(); });
+        // before WorkerMain can inspect them. Several workers: an area's
+        // custom textures are PNGs of up to 4K, decoded in parallel.
+        const unsigned cores = std::max(1U, std::thread::hardware_concurrency());
+        const unsigned workers = std::clamp(cores > 2U ? cores - 2U : 1U, 1U, 8U);
+        for (unsigned index = 0; index < workers; ++index) {
+            mWorkers.emplace_back([this] { WorkerMain(); });
+        }
     }
 
     ~Impl() {
@@ -546,8 +566,10 @@ class AzaharTexturePackRuntime::Impl {
             mStopping = true;
         }
         mWorkAvailable.notify_all();
-        if (mWorker.joinable()) {
-            mWorker.join();
+        for (auto& worker : mWorkers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
         }
     }
 
@@ -555,6 +577,21 @@ class AzaharTexturePackRuntime::Impl {
         configuration = NormalizeConfiguration(std::move(configuration));
         std::scoped_lock lock(mMutex);
         if (mConfigured && configuration == mConfiguration) {
+            return;
+        }
+        // The memory limit and preloading apply without reindexing (and
+        // without the renderer dropping its textures).
+        auto same = configuration;
+        same.CacheBudgetBytes = mConfiguration.CacheBudgetBytes;
+        same.Preload = mConfiguration.Preload;
+        if (mConfigured && same == mConfiguration) {
+            mConfiguration = std::move(configuration);
+            EvictLocked();
+            for (const auto& job : mPreloadJobs) {
+                mPendingLoadGenerations.erase(job.Hash);
+            }
+            mPreloadJobs.clear();
+            StartPreloadLocked();
             return;
         }
         mConfiguration = std::move(configuration);
@@ -568,7 +605,7 @@ class AzaharTexturePackRuntime::Impl {
             RebuildLocked();
         } catch (const std::exception& exception) {
             mIndex.clear();
-            mReplacementCache.clear();
+            ClearCacheLocked();
             mLastError = exception.what();
         }
     }
@@ -583,7 +620,7 @@ class AzaharTexturePackRuntime::Impl {
             RebuildLocked();
         } catch (const std::exception& exception) {
             mIndex.clear();
-            mReplacementCache.clear();
+            ClearCacheLocked();
             mLastError = exception.what();
         }
     }
@@ -678,6 +715,7 @@ class AzaharTexturePackRuntime::Impl {
                 return nullptr;
             }
             if (const auto cached = mReplacementCache.find(*loadHash); cached != mReplacementCache.end()) {
+                TouchLocked(*loadHash);
                 return cached->second;
             }
             const auto found = mIndex.find(*loadHash);
@@ -693,8 +731,13 @@ class AzaharTexturePackRuntime::Impl {
             if (generation != mGeneration || !LoadActiveLocked()) {
                 return nullptr;
             }
-            const auto [entry, inserted] = mReplacementCache.try_emplace(*loadHash, replacement);
-            return entry->second;
+            if (const auto cached = mReplacementCache.find(*loadHash); cached != mReplacementCache.end()) {
+                TouchLocked(*loadHash);
+                return cached->second;
+            }
+            InsertCacheLocked(*loadHash, replacement);
+            TouchLocked(*loadHash);
+            return replacement;
         } catch (const std::exception& exception) {
             SetError(exception.what());
             return nullptr;
@@ -804,6 +847,7 @@ class AzaharTexturePackRuntime::Impl {
         }
         if (const auto cached = mReplacementCache.find(*loadHash);
             cached != mReplacementCache.end()) {
+            TouchLocked(*loadHash);
             return {
                 AzaharTextureResolveState::Ready,
                 *loadHash, cached->second};
@@ -823,6 +867,16 @@ class AzaharTexturePackRuntime::Impl {
                 mPendingLoadGenerations.find(*loadHash);
             pending != mPendingLoadGenerations.end() &&
             pending->second == generation) {
+            if (const auto preload = std::find_if(mPreloadJobs.begin(), mPreloadJobs.end(),
+                                                  [&](const LoadJob& job) { return job.Hash == *loadHash; });
+                preload != mPreloadJobs.end()) {
+                auto job = std::move(*preload);
+                mPreloadJobs.erase(preload);
+                job.Preload = false;
+                mLoadJobs.push_front(std::move(job));
+                mWorkAvailable.notify_one();
+            }
+            DemandLocked(*loadHash);  // (also one being preloaded right now)
             return {
                 AzaharTextureResolveState::Pending,
                 *loadHash, nullptr};
@@ -832,7 +886,7 @@ class AzaharTexturePackRuntime::Impl {
             *loadHash, generation);
         mLoadJobs.push_back({
             *loadHash, generation, indexed->second});
-        ++mPendingLoads;
+        DemandLocked(*loadHash);
         mWorkAvailable.notify_one();
         return {
             AzaharTextureResolveState::Pending,
@@ -851,6 +905,7 @@ class AzaharTexturePackRuntime::Impl {
         if (const auto cached =
                 mReplacementCache.find(nativeHash);
             cached != mReplacementCache.end()) {
+            TouchLocked(nativeHash);
             return {
                 AzaharTextureResolveState::Ready,
                 nativeHash, cached->second};
@@ -888,6 +943,8 @@ class AzaharTexturePackRuntime::Impl {
         status.DumpedTextures = mDumpedCount;
         status.PendingDumps = mPendingDumps;
         status.PendingLoads = mPendingLoads;
+        status.PreloadsLeft = mPreloadJobs.size() + mActivePreloads;
+        status.CacheBytes = mCacheBytes;
         status.FailedLoads = mFailedLoadHashes.size();
         status.UnsupportedTextureFiles = mUnsupportedFiles;
         status.LoadDirectory = mLoadDirectory;
@@ -911,16 +968,75 @@ class AzaharTexturePackRuntime::Impl {
         mIdle.wait(lock, [&] { return mPendingLoads == 0U; });
     }
 
+    bool WaitForPendingLoadsFor(std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mMutex);
+        return mIdle.wait_for(lock, timeout, [&] { return mPendingLoads == 0U; });
+    }
+
   private:
+    // Decoded textures stay in memory for the renderer to upload again (an
+    // area visited before): at most the configured limit (a 4K pack decodes
+    // to several GB), least recently used first; preloaded ones not used yet
+    // count as the oldest. One just decoded for a frame is the newest.
+
+    static uint64_t ReplacementBytes(const std::shared_ptr<const AzaharTextureReplacement>& replacement) {
+        return replacement != nullptr && replacement->Rgba8 != nullptr ? replacement->Rgba8->size() : 0U;
+    }
+
+    void TouchLocked(uint64_t hash) const {
+        mCacheUse[hash] = ++mUseClock;
+    }
+
+    void ClearCacheLocked() {
+        mReplacementCache.clear();
+        mCacheUse.clear();
+        mCacheBytes = 0U;
+    }
+
+    void InsertCacheLocked(uint64_t hash, std::shared_ptr<const AzaharTextureReplacement> replacement,
+                           bool preloaded = false) {
+        if (const auto old = mReplacementCache.find(hash); old != mReplacementCache.end()) {
+            mCacheBytes -= std::min(mCacheBytes, ReplacementBytes(old->second));
+        }
+        mCacheBytes += ReplacementBytes(replacement);
+        mReplacementCache.insert_or_assign(hash, std::move(replacement));
+        mCacheUse[hash] = preloaded ? 0U : ++mUseClock;
+        EvictLocked();
+    }
+
+    void EvictLocked() {
+        const uint64_t budget = mConfiguration.CacheBudgetBytes;
+        if (mCacheBytes <= budget) {
+            return;
+        }
+        std::vector<std::pair<uint64_t, uint64_t>> taken;  // last use, hash
+        for (const auto& [cachedHash, use] : mCacheUse) {
+            if (mReplacementCache.contains(cachedHash)) {
+                taken.emplace_back(use, cachedHash);
+            }
+        }
+        std::sort(taken.begin(), taken.end());
+        for (const auto& [use, cachedHash] : taken) {
+            if (mCacheBytes <= budget * 7U / 8U) {
+                break;
+            }
+            const auto found = mReplacementCache.find(cachedHash);
+            mCacheBytes -= std::min(mCacheBytes, ReplacementBytes(found->second));
+            mReplacementCache.erase(found);
+            mCacheUse.erase(cachedHash);
+        }
+    }
+
     bool LoadActiveLocked() const {
         return mConfiguration.LoadCustomTextures || !mConfiguration.OverlayDirectory.empty();
     }
 
     void RebuildLocked() {
         mIndex.clear();
-        mReplacementCache.clear();
+        ClearCacheLocked();
         mFailedLoadHashes.clear();
         mPendingLoadGenerations.clear();
+        mPreloadJobs.clear();
         mDumpedHashes.clear();
         mLastError.clear();
         mUnsupportedFiles = 0U;
@@ -954,6 +1070,44 @@ class AzaharTexturePackRuntime::Impl {
             try {
                 EnsureDumpPack(mDumpDirectory, mDumpUsesNewHash);
             } catch (const std::exception& exception) { mLastError = exception.what(); }
+        }
+        StartPreloadLocked();
+    }
+
+    // Preload: the pack's textures are decoded in the background (up to the
+    // memory limit), so areas appear with them without waiting.
+    void StartPreloadLocked() {
+        if (!mConfiguration.Preload || !LoadActiveLocked()) {
+            return;
+        }
+        uint64_t planned = mCacheBytes;
+        std::unordered_set<std::string> paths;
+        for (const auto& [hash, texture] : mIndex) {
+            if (mReplacementCache.contains(hash) || mPendingLoadGenerations.contains(hash) ||
+                mFailedLoadHashes.contains(hash) || !paths.insert(texture.Path.string()).second) {
+                continue;
+            }
+            const uint64_t bytes = PngDecodedBytes(texture.Path);
+            if (bytes == 0U || planned + bytes > mConfiguration.CacheBudgetBytes * 9U / 10U) {
+                continue;
+            }
+            planned += bytes;
+            mPendingLoadGenerations.insert_or_assign(hash, mGeneration);
+            mPreloadJobs.push_back({hash, mGeneration, texture, true});
+        }
+        mWorkAvailable.notify_all();
+    }
+
+    // At most half of the workers preload (the game keeps the rest).
+    size_t PreloadWorkerLimit() const {
+        return std::max<size_t>(1U, mWorkers.size() / 2U);
+    }
+
+    // A texture needed now (a frame waits for it): queued, or a preload of
+    // it moved to the front.
+    void DemandLocked(uint64_t hash) {
+        if (mDemanded.insert(hash).second) {
+            ++mPendingLoads;
         }
     }
 
@@ -1007,11 +1161,15 @@ class AzaharTexturePackRuntime::Impl {
             bool load = false;
             {
                 std::unique_lock lock(mMutex);
+                const auto preloadReady = [&] {
+                    return !mPreloadJobs.empty() && mActivePreloads < PreloadWorkerLimit();
+                };
                 mWorkAvailable.wait(lock, [&] {
                     return mStopping || !mLoadJobs.empty() ||
-                           !mDumpJobs.empty();
+                           !mDumpJobs.empty() || preloadReady();
                 });
-                if (mLoadJobs.empty() && mDumpJobs.empty()) {
+                if (mLoadJobs.empty() && mDumpJobs.empty() &&
+                    (mStopping || !preloadReady())) {
                     if (mStopping) {
                         return;
                     }
@@ -1021,9 +1179,14 @@ class AzaharTexturePackRuntime::Impl {
                     load = true;
                     loadJob = std::move(mLoadJobs.front());
                     mLoadJobs.pop_front();
-                } else {
+                } else if (!mDumpJobs.empty()) {
                     job = std::move(mDumpJobs.front());
                     mDumpJobs.pop_front();
+                } else {
+                    load = true;
+                    loadJob = std::move(mPreloadJobs.front());
+                    mPreloadJobs.pop_front();
+                    ++mActivePreloads;
                 }
             }
 
@@ -1048,9 +1211,8 @@ class AzaharTexturePackRuntime::Impl {
                         if (replacement != nullptr &&
                             loadJob.Generation == mGeneration &&
                             LoadActiveLocked()) {
-                            mReplacementCache.insert_or_assign(
-                                loadJob.Hash,
-                                std::move(replacement));
+                            InsertCacheLocked(loadJob.Hash, std::move(replacement),
+                                              loadJob.Preload && !mDemanded.contains(loadJob.Hash));
                             mFailedLoadHashes.erase(loadJob.Hash);
                         } else if (!failure.empty() &&
                                    loadJob.Generation ==
@@ -1060,7 +1222,11 @@ class AzaharTexturePackRuntime::Impl {
                         }
                         mPendingLoadGenerations.erase(pending);
                     }
-                    if (mPendingLoads > 0U) {
+                    if (loadJob.Preload) {
+                        --mActivePreloads;
+                        mWorkAvailable.notify_one();
+                    }
+                    if (mDemanded.erase(loadJob.Hash) != 0U && mPendingLoads > 0U) {
                         --mPendingLoads;
                     }
                     if (mPendingLoads == 0U) {
@@ -1098,7 +1264,7 @@ class AzaharTexturePackRuntime::Impl {
     mutable std::mutex mMutex;
     std::condition_variable mWorkAvailable;
     std::condition_variable mIdle;
-    std::thread mWorker;
+    std::vector<std::thread> mWorkers;
     bool mStopping = false;
     bool mConfigured = false;
     AzaharTexturePackConfiguration mConfiguration;
@@ -1109,10 +1275,16 @@ class AzaharTexturePackRuntime::Impl {
     bool mDumpUsesNewHash = true;
     std::unordered_map<uint64_t, IndexedTexture> mIndex;
     std::unordered_map<uint64_t, std::shared_ptr<const AzaharTextureReplacement>> mReplacementCache;
+    mutable std::unordered_map<uint64_t, uint64_t> mCacheUse;  // hash -> last use (taken by the renderer)
+    mutable uint64_t mUseClock = 0U;
+    uint64_t mCacheBytes = 0U;
     std::unordered_map<uint64_t, uint64_t> mPendingLoadGenerations;
     std::unordered_set<uint64_t> mFailedLoadHashes;
     std::unordered_set<uint64_t> mDumpedHashes;
     std::deque<LoadJob> mLoadJobs;
+    std::deque<LoadJob> mPreloadJobs;
+    std::unordered_set<uint64_t> mDemanded;  // queued for a frame (mPendingLoads)
+    size_t mActivePreloads = 0U;
     std::deque<DumpJob> mDumpJobs;
     size_t mPendingLoads = 0U;
     size_t mPendingDumps = 0U;
@@ -1170,6 +1342,10 @@ void AzaharTexturePackRuntime::WaitForPendingDumps() {
 
 void AzaharTexturePackRuntime::WaitForPendingLoads() {
     mImpl->WaitForPendingLoads();
+}
+
+bool AzaharTexturePackRuntime::WaitForPendingLoadsFor(std::chrono::milliseconds timeout) {
+    return mImpl->WaitForPendingLoadsFor(timeout);
 }
 
 } // namespace Oot3d::Renderer

@@ -1196,6 +1196,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    settings.TexturePacks.Azahar.DumpDirectory},
                   {"ButtonStyleDirectory",
                    settings.TexturePacks.Azahar.ButtonStyleDirectory},
+                  {"WaitForCustomTextures",
+                   settings.TexturePacks.Azahar.WaitForCustomTextures},
+                  {"TextureMemoryMB",
+                   settings.TexturePacks.Azahar.TextureMemoryMB},
+                  {"PreloadCustomTextures",
+                   settings.TexturePacks.Azahar.PreloadCustomTextures},
               }},
          }},
         {"Grass",
@@ -1449,6 +1455,19 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                     result.Value.TexturePacks.Azahar.DumpDirectory.clear();
                 }
                 auto& packs = result.Value.TexturePacks.Azahar;
+                if (FindMember(*azahar, "WaitForCustomTextures") != nullptr) {
+                    ReadScalar(*azahar, "WaitForCustomTextures", packs.WaitForCustomTextures,
+                               "Graphics.TexturePacks.Azahar.WaitForCustomTextures", result);
+                }
+                if (FindMember(*azahar, "TextureMemoryMB") != nullptr) {
+                    ReadScalar(*azahar, "TextureMemoryMB", packs.TextureMemoryMB,
+                               "Graphics.TexturePacks.Azahar.TextureMemoryMB", result);
+                    packs.TextureMemoryMB = std::clamp(packs.TextureMemoryMB, 256, 65536);
+                }
+                if (FindMember(*azahar, "PreloadCustomTextures") != nullptr) {
+                    ReadScalar(*azahar, "PreloadCustomTextures", packs.PreloadCustomTextures,
+                               "Graphics.TexturePacks.Azahar.PreloadCustomTextures", result);
+                }
                 if (FindMember(*azahar, "ButtonStyleDirectory") != nullptr) {
                     ReadScalar(*azahar, "ButtonStyleDirectory", packs.ButtonStyleDirectory,
                                "Graphics.TexturePacks.Azahar.ButtonStyleDirectory", result);

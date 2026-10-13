@@ -3044,6 +3044,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     const uint64_t replacementBytes =
                         resolved.Replacement->Rgba8->size();
                     const bool budgetAvailable =
+                        mCustomTextureWaitThisFrame ||
                         mCustomTextureUploadBytesThisFrame == 0U ||
                         (mCustomTextureUploadBytesThisFrame <
                              kCustomTextureUploadBudgetBytes &&
@@ -3228,6 +3229,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 const uint64_t replacementBytes =
                     replacementResult.Replacement->Rgba8->size();
                 const bool budgetAvailable =
+                    mCustomTextureWaitThisFrame ||
                     mCustomTextureUploadBytesThisFrame == 0U ||
                     (mCustomTextureUploadBytesThisFrame <
                          kCustomTextureUploadBudgetBytes &&

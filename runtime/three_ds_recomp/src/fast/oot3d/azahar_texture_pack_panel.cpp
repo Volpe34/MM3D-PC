@@ -102,6 +102,27 @@ bool DrawAzaharTexturePackPanel(AzaharTexturePackSettings& settings, AzaharTextu
     bool changed = DrawButtonStyle(settings, state);
     ImGui::SeparatorText("Custom textures");
     changed |= ImGui::Checkbox("Load custom textures", &settings.LoadCustomTextures);
+    changed |= ImGui::Checkbox("Wait for custom textures (no pop-in)", &settings.WaitForCustomTextures);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("A new area appears with its custom textures already loaded, after a short\n"
+                          "pause, instead of showing the original textures for a moment.");
+    }
+    changed |= ImGui::Checkbox("Preload custom textures", &settings.PreloadCustomTextures);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Decodes the whole pack in the background (up to the texture memory below),\n"
+                          "so areas appear with their custom textures without any wait.\n"
+                          "A 4K pack needs several GB.");
+    }
+    ImGui::SetNextItemWidth(220.0F);
+    if (ImGui::SliderInt("Texture memory (MB)", &settings.TextureMemoryMB, 512, 16384, "%d MB",
+                         ImGuiSliderFlags_AlwaysClamp)) {
+        settings.TextureMemoryMB = settings.TextureMemoryMB / 256 * 256;
+        changed = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("RAM kept for decoded custom textures (areas visited before appear at once).\n"
+                          "The least recently used ones are dropped beyond it. Ctrl+click to type a value.");
+    }
     changed |= ImGui::Checkbox("Dump native textures", &settings.DumpTextures);
 
     ImGui::SeparatorText("Folders");
@@ -138,6 +159,8 @@ bool DrawAzaharTexturePackPanel(AzaharTexturePackSettings& settings, AzaharTextu
         "Indexed: %zu  Loaded: %zu  Loading: %zu  Failed: %zu",
         status.IndexedTextures, status.LoadedTextures,
         status.PendingLoads, status.FailedLoads);
+    ImGui::Text("Memory: %llu MB  Preloading: %zu left",
+                static_cast<unsigned long long>(status.CacheBytes >> 20U), status.PreloadsLeft);
     ImGui::Text("Dumped: %zu  Pending dumps: %zu",
                 status.DumpedTextures, status.PendingDumps);
     if (status.UnsupportedTextureFiles != 0U) {

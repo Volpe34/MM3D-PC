@@ -149,7 +149,17 @@ bool InterfaceDrawSnaps(const Oot3dPicaVulkanDrawPlan& current);
 
 bool VertexDataBlendAllowed(const Oot3dPicaVulkanDrawPlan& current) {
     static const bool effectVertexBlend = std::getenv("TRIAEVUM_EFFECT_VERTEX_BLEND") != nullptr;
-    return effectVertexBlend || current.Composition.Layer != Oot3dPicaCompositionLayer::TransparentWorld;
+    if (effectVertexBlend) {
+        return true;
+    }
+    // Also outside a recognised gameplay frame (layer unknown: a cutscene,
+    // a test warp from the title): a blended draw that tests depth without
+    // writing it is a world effect (Link's roll dust became squares), not a
+    // 2D interface part.
+    const auto& merger = current.State.OutputMerger;
+    const bool worldEffect = current.Composition.Layer == Oot3dPicaCompositionLayer::Unknown &&
+                             merger.Blend.Enabled && merger.Depth.TestEnabled && !merger.Depth.WriteEnabled;
+    return current.Composition.Layer != Oot3dPicaCompositionLayer::TransparentWorld && !worldEffect;
 }
 
 bool InterpolatableVertexValuesDiffer(
@@ -1666,6 +1676,22 @@ AnalyzeVisualTransitionWithMatching(const Oot3dPicaVisualFrame& previous, const 
             EqualIndexBytes(previousDraw, currentDraw) &&
             InterpolatableVertexValuesDiffer(
                 previousDraw, currentDraw, Oot3dPicaVertexInputRate::PerVertex);
+        static const bool vertexBlendTrace = std::getenv("TRIAEVUM_VERTEX_BLEND_TRACE") != nullptr;
+        if (vertexBlendTrace && (delta.PerVertex || delta.PerInstanceVertex)) {
+            const auto& state = currentDraw.State;
+            const auto& texture = state.Textures[0];
+            std::fprintf(stderr,
+                         "VBLEND dom=%d layer=%d verts=%u depthW=%d blend=%d src=%d dst=%d tex=%08X %ux%u fmt=%u "
+                         "fb=%08X prevIdx=%zu\n",
+                         static_cast<int>(currentDraw.CompositionDomain),
+                         static_cast<int>(currentDraw.Composition.Layer), currentDraw.VertexCount,
+                         state.OutputMerger.Depth.WriteEnabled ? 1 : 0, state.OutputMerger.Blend.Enabled ? 1 : 0,
+                         static_cast<int>(state.OutputMerger.Blend.SourceColor),
+                         static_cast<int>(state.OutputMerger.Blend.DestinationColor),
+                         texture.Enabled ? texture.PhysicalAddress : 0U, texture.Width, texture.Height,
+                         static_cast<unsigned>(texture.Format), state.Framebuffer.ColorPhysicalAddress,
+                         matching.PreviousByCurrent[currentIndex]->PreviousIndex);
+        }
         delta.VertexUniforms =
             ContinuousVertexUniformValuesDiffer(previousDraw, currentDraw);
         delta.FragmentUniforms =
