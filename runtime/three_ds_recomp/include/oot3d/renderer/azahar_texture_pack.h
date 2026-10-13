@@ -43,6 +43,9 @@ struct AzaharTextureReplacement {
     uint32_t Width = 0;
     uint32_t Height = 0;
     uint64_t NativeHash = 0;
+    // The full mip chain, level 0 first (each level max(1, size >> level)):
+    // a texture several times the game's size shimmers at a distance without.
+    uint32_t MipLevels = 1;
     std::shared_ptr<const std::vector<uint8_t>> Rgba8;
     std::filesystem::path SourcePath;
 };

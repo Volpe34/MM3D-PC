@@ -446,6 +446,39 @@ std::unordered_map<uint64_t, IndexedTexture> IndexTexturePack(const std::filesys
     return index;
 }
 
+// Appends the mip levels below the RGBA8 image (2x2 box filter, odd edges
+// clamped) down to 1x1; returns the level count.
+uint32_t AppendMipChain(std::vector<uint8_t>& pixels, uint32_t width, uint32_t height) {
+    uint32_t levels = 1U;
+    size_t source = 0U;
+    pixels.reserve(pixels.size() + pixels.size() / 3U + 64U);
+    while (width > 1U || height > 1U) {
+        const uint32_t nextWidth = std::max(1U, width / 2U);
+        const uint32_t nextHeight = std::max(1U, height / 2U);
+        const size_t destination = pixels.size();
+        pixels.resize(destination + static_cast<size_t>(nextWidth) * nextHeight * 4U);
+        for (uint32_t y = 0; y < nextHeight; ++y) {
+            const uint32_t y0 = std::min(height - 1U, y * 2U), y1 = std::min(height - 1U, y * 2U + 1U);
+            for (uint32_t x = 0; x < nextWidth; ++x) {
+                const uint32_t x0 = std::min(width - 1U, x * 2U), x1 = std::min(width - 1U, x * 2U + 1U);
+                const uint8_t* a = &pixels[source + (static_cast<size_t>(y0) * width + x0) * 4U];
+                const uint8_t* b = &pixels[source + (static_cast<size_t>(y0) * width + x1) * 4U];
+                const uint8_t* c = &pixels[source + (static_cast<size_t>(y1) * width + x0) * 4U];
+                const uint8_t* d = &pixels[source + (static_cast<size_t>(y1) * width + x1) * 4U];
+                uint8_t* out = &pixels[destination + (static_cast<size_t>(y) * nextWidth + x) * 4U];
+                for (int channel = 0; channel < 4; ++channel) {
+                    out[channel] = static_cast<uint8_t>((a[channel] + b[channel] + c[channel] + d[channel] + 2) / 4);
+                }
+            }
+        }
+        source = destination;
+        width = nextWidth;
+        height = nextHeight;
+        ++levels;
+    }
+    return levels;
+}
+
 std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedTexture& indexed, uint64_t hash) {
     const auto input = ReadBinaryFile(indexed.Path);
     int width = 0;
@@ -476,9 +509,12 @@ std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedT
         FlipRows(*pixels, static_cast<uint32_t>(width), static_cast<uint32_t>(height), 4U);
     }
 
+    const uint32_t mipLevels = AppendMipChain(*pixels, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+
     auto replacement = std::make_shared<AzaharTextureReplacement>();
     replacement->Width = static_cast<uint32_t>(width);
     replacement->Height = static_cast<uint32_t>(height);
+    replacement->MipLevels = mipLevels;
     replacement->NativeHash = hash;
     replacement->Rgba8 = std::move(pixels);
     replacement->SourcePath = indexed.Path;
@@ -894,7 +930,7 @@ class AzaharTexturePackRuntime::Impl {
     }
 
     AzaharTextureResolveResult PollQueued(
-        uint64_t nativeHash) const {
+        uint64_t nativeHash) {
         std::scoped_lock lock(mMutex);
         if (!mConfigured ||
             !LoadActiveLocked()) {
@@ -923,10 +959,20 @@ class AzaharTexturePackRuntime::Impl {
                 AzaharTextureResolveState::Pending,
                 nativeHash, nullptr};
         }
+        // Indexed but neither decoded nor queued: dropped from the cache
+        // (memory limit) or a texture restored from a savestate: decode it
+        // again.
+        if (const auto indexed = mIndex.find(nativeHash); indexed != mIndex.end()) {
+            mPendingLoadGenerations.insert_or_assign(nativeHash, mGeneration);
+            mLoadJobs.push_back({nativeHash, mGeneration, indexed->second});
+            DemandLocked(nativeHash);
+            mWorkAvailable.notify_one();
+            return {
+                AzaharTextureResolveState::Pending,
+                nativeHash, nullptr};
+        }
         return {
-            mIndex.contains(nativeHash)
-                ? AzaharTextureResolveState::Failed
-                : AzaharTextureResolveState::Missing,
+            AzaharTextureResolveState::Missing,
             nativeHash, nullptr};
     }
 

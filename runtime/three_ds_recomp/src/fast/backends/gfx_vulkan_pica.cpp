@@ -2945,6 +2945,14 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     ? texture.MinMipLevel : 0U;
                 record.SamplerState.MaxMipLevel = !shadow2d
                     ? texture.MaxMipLevel : 0U;
+                if (replacement && mipLevels > 1U) {
+                    // A custom texture has its own mip chain (the game's
+                    // levels, if any, are a few of its smaller ones).
+                    record.SamplerState.MinFilter =
+                        NativePicaMinFilter(texture.MinLinear, true, mipLevels);
+                    record.SamplerState.MinMipLevel = 0U;
+                    record.SamplerState.MaxMipLevel = mipLevels - 1U;
+                }
                 record.CustomReplacementHash = replacementHash;
                 record.CustomReplacementReady = replacement;
                 static const bool replacementTrace =
@@ -3060,7 +3068,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                         *resolved.Replacement->Rgba8,
                         resolved.Replacement->Width,
                         resolved.Replacement->Height,
-                        1U,
+                        resolved.Replacement->MipLevels,
                         VK_FORMAT_R8G8B8A8_UNORM,
                         resolved.NativeHash, true, &inserted);
                     if (inserted) {
@@ -3243,7 +3251,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                         *replacementResult.Replacement->Rgba8,
                         replacementResult.Replacement->Width,
                         replacementResult.Replacement->Height,
-                        1U,
+                        replacementResult.Replacement->MipLevels,
                         VK_FORMAT_R8G8B8A8_UNORM,
                         replacementResult.NativeHash, true,
                         &inserted);
@@ -9279,6 +9287,11 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
             // GENERAL entries alias live Shadow2D render-target images. Their
             // contents and ownership are restored with the render target.
             if (texture.ImageLayout == VK_IMAGE_LAYOUT_GENERAL) {
+                continue;
+            }
+            // Custom textures come back from the pack (the native texture
+            // keeps their hash): a 4K pack's are far too big for a state.
+            if (key.CustomReplacement) {
                 continue;
             }
             const auto expectedBytes = NativePicaDecodedMipChainSize(

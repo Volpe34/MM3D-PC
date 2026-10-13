@@ -5783,7 +5783,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         // time stopped: MM's Player_InBlockingCsMode flags), and the minimap
         // only where the lower screen shows an area map (a 512x1024 map sheet;
         // without the area's map it shows the region's emblem instead).
-        if (mm3dScreen == 1 && !mm3dRestoration) {
+        // The Song of Time's return to the first day: the lower screen shows
+        // the items kept (ReturnToStart) through the question and the fall,
+        // and the HUD parts cut that into the corners (an item grid).
+        const bool returnToStart =
+            std::find(shownLowerLayouts.begin(), shownLowerLayouts.end(), "ReturnToStart") != shownLowerLayouts.end();
+        if (returnToStart && !mm3dRestoration && mm3dAppliedHud != 2 &&
+            std::getenv("TRIAEVUM_KEEP_HUD") == nullptr) {
+          mm3dAppliedHud = 2;
+          Oot3dNativeGame::SetTriAevumHudParts({});
+        }
+        if (mm3dScreen == 1 && !mm3dRestoration && !returnToStart) {
           auto &memory = process.Memory();
           uint32_t context = 0, game = 0, type = 0, player = 0, flags1 = 0;
           bool cutscene = false;
@@ -5894,7 +5904,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             (mm3dScreen == 1 || mm3dScreen == -1) && !titleShown && !fileSelectShown && !menuOpening &&
             !lowerLayouts.empty() &&
             std::any_of(lowerLayouts.begin(), lowerLayouts.end(),
-                        [](const std::string &name) { return name != "TouchPanel"; }) &&
+                        [](const std::string &name) {
+                          // (The Song of Time's "return to the first day" shows
+                          // the items kept on the lower screen: only
+                          // information, and over the question's box.)
+                          return name != "TouchPanel" && name != "ReturnToStart" && !name.empty();
+                        }) &&
             std::getenv("TRIAEVUM_NO_LOWER_DIALOG_INSET") == nullptr;
         insetLayout = lowerDrawing && (mm3dScreen == 7 || lowerDialog);
         // Items and Masks are composed on one screen.

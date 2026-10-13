@@ -1272,8 +1272,136 @@ VisualDrawMatching BuildVisualDrawMatching(
     static const bool orderPairs = std::getenv("TRIAEVUM_ORDER_PAIRS") != nullptr;
     // Left unpaired on purpose (not re-paired below).
     std::vector<bool> keepUnpaired(current.Draws.size(), false);
-    if (!orderPairs && matching.CameraDeltaValid) {
-        if (const auto inverseCamera = InvertAffine(matching.CameraDelta)) {
+    // Without a camera estimate (no static scenery: the Song of Time's fall,
+    // 128 identical clocks drawn in a new order every frame) the pairing of
+    // identical draws is still corrected and checked, with the camera taken
+    // as still: a pair that moved far is shown unblended, not as a clock
+    // blended halfway into another one.
+    const bool assumedStillCamera = !matching.CameraDeltaValid && !matching.CameraCut;
+    std::array<std::array<float, 4>, 3> pairingCamera = matching.CameraDelta;
+    if (assumedStillCamera) {
+        pairingCamera = {{{1.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F, 0.0F}}};
+        // ... unless the largest group of identical world draws (8 or more,
+        // the same count in both frames) moves as one: that motion is the
+        // camera's (it falls with Link among the clocks, up to 60 units a
+        // game frame), taken as a translation.
+        std::map<uint64_t, std::pair<std::vector<size_t>, std::vector<size_t>>> identical;
+        for (size_t index = 0; index < current.Draws.size(); ++index)
+            if (UsesModelViewLayout(current.Draws[index].VertexShader.Uniforms))
+                identical[currentStrict[index]].first.push_back(index);
+        for (size_t index = 0; index < previous.Draws.size(); ++index)
+            if (UsesModelViewLayout(previous.Draws[index].VertexShader.Uniforms))
+                if (const auto found = identical.find(previousStrict[index]); found != identical.end())
+                    found->second.second.push_back(index);
+        const std::pair<std::vector<size_t>, std::vector<size_t>>* largest = nullptr;
+        for (const auto& [identity, group] : identical)
+            if (group.first.size() >= 8U && group.first.size() == group.second.size() &&
+                (largest == nullptr || group.first.size() > largest->first.size()))
+                largest = &group;
+        static const bool groupTrace = std::getenv("TRIAEVUM_JUMP_TRACE") != nullptr;
+        if (groupTrace) {
+            size_t best = 0, bestPrevious = 0;
+            for (const auto& [identity, group] : identical)
+                if (group.first.size() > best) { best = group.first.size(); bestPrevious = group.second.size(); }
+            std::fprintf(stderr, "TRIAEVUM_GROUPS identities=%zu largest=%zu/%zu\n", identical.size(), best, bestPrevious);
+        }
+        if (largest != nullptr && largest->first.size() <= 512U) {
+            const size_t count = largest->first.size();
+            const auto at = [](const Oot3dPicaVulkanDrawPlan& draw) {
+                const auto& f = draw.VertexShader.Uniforms.Floats;
+                return std::array<double, 3>{f[20][3], f[21][3], f[22][3]};
+            };
+            std::vector<std::array<double, 3>> here(count), before(count);
+            for (size_t index = 0; index < count; ++index) {
+                here[index] = at(current.Draws[largest->first[index]]);
+                before[index] = at(previous.Draws[largest->second[index]]);
+            }
+            // previous = R * current + t, refined over two pairings.
+            Affine34 estimate{{{1.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F, 0.0F}}};
+            const auto apply = [&](const std::array<double, 3>& point) {
+                std::array<double, 3> out{};
+                for (size_t row = 0; row < 3U; ++row)
+                    out[row] = estimate[row][0] * point[0] + estimate[row][1] * point[1] +
+                               estimate[row][2] * point[2] + estimate[row][3];
+                return out;
+            };
+            std::vector<size_t> assignment;
+            size_t coherent = 0;
+            for (int pass = 0; pass < 2; ++pass) {
+                std::vector<std::vector<double>> cost(count, std::vector<double>(count, 0.0));
+                for (size_t row = 0; row < count; ++row) {
+                    const auto moved = apply(here[row]);
+                    for (size_t column = 0; column < count; ++column) {
+                        double squared = 0.0;
+                        for (size_t axis = 0; axis < 3U; ++axis)
+                            squared += (before[column][axis] - moved[axis]) * (before[column][axis] - moved[axis]);
+                        cost[row][column] = std::isfinite(squared) ? std::sqrt(squared) : 1.0e12;
+                    }
+                }
+                assignment = MinimalCostAssignment(cost);
+                // Rigid fit of the pairs (Horn's quaternion method).
+                std::array<double, 3> centerHere{}, centerBefore{};
+                for (size_t row = 0; row < count; ++row)
+                    for (size_t axis = 0; axis < 3U; ++axis) {
+                        centerHere[axis] += here[row][axis] / static_cast<double>(count);
+                        centerBefore[axis] += before[assignment[row]][axis] / static_cast<double>(count);
+                    }
+                double m[3][3] = {};
+                for (size_t row = 0; row < count; ++row)
+                    for (size_t i = 0; i < 3U; ++i)
+                        for (size_t j = 0; j < 3U; ++j)
+                            m[i][j] += (here[row][i] - centerHere[i]) * (before[assignment[row]][j] - centerBefore[j]);
+                const double n[4][4] = {
+                    {m[0][0] + m[1][1] + m[2][2], m[1][2] - m[2][1], m[2][0] - m[0][2], m[0][1] - m[1][0]},
+                    {m[1][2] - m[2][1], m[0][0] - m[1][1] - m[2][2], m[0][1] + m[1][0], m[2][0] + m[0][2]},
+                    {m[2][0] - m[0][2], m[0][1] + m[1][0], -m[0][0] + m[1][1] - m[2][2], m[1][2] + m[2][1]},
+                    {m[0][1] - m[1][0], m[2][0] + m[0][2], m[1][2] + m[2][1], -m[0][0] - m[1][1] + m[2][2]}};
+                double shift = 0.0;
+                for (const auto& line : n)
+                    for (const double value : line) shift += std::abs(value);
+                std::array<double, 4> q{1.0, 0.0, 0.0, 0.0};
+                for (int iteration = 0; iteration < 100; ++iteration) {
+                    std::array<double, 4> next{};
+                    for (size_t i = 0; i < 4U; ++i) {
+                        next[i] = shift * q[i];
+                        for (size_t j = 0; j < 4U; ++j) next[i] += n[i][j] * q[j];
+                    }
+                    const double length = std::sqrt(next[0] * next[0] + next[1] * next[1] + next[2] * next[2] + next[3] * next[3]);
+                    if (!(length > 0.0)) break;
+                    for (size_t i = 0; i < 4U; ++i) q[i] = next[i] / length;
+                }
+                const double w = q[0], x = q[1], y = q[2], z = q[3];
+                const double r[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)},
+                                        {2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)},
+                                        {2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)}};
+                for (size_t row = 0; row < 3U; ++row) {
+                    double translation = centerBefore[row];
+                    for (size_t column = 0; column < 3U; ++column) {
+                        estimate[row][column] = static_cast<float>(r[row][column]);
+                        translation -= r[row][column] * centerHere[column];
+                    }
+                    estimate[row][3] = static_cast<float>(translation);
+                }
+                coherent = 0;
+                for (size_t row = 0; row < count; ++row) {
+                    const auto moved = apply(here[row]);
+                    double squared = 0.0;
+                    for (size_t axis = 0; axis < 3U; ++axis)
+                        squared += (before[assignment[row]][axis] - moved[axis]) * (before[assignment[row]][axis] - moved[axis]);
+                    coherent += squared < 9.0 ? 1U : 0U;
+                }
+            }
+            static const bool estimateTrace = std::getenv("TRIAEVUM_JUMP_TRACE") != nullptr;
+            if (estimateTrace)
+                std::fprintf(stderr, "TRIAEVUM_GROUP_CAMERA count=%zu coherent=%zu move=%.1f,%.1f,%.1f\n", count,
+                             coherent, estimate[0][3], estimate[1][3], estimate[2][3]);
+            if (coherent * 10U >= count * 8U) {
+                pairingCamera = estimate;
+            }
+        }
+    }
+    if (!orderPairs && (matching.CameraDeltaValid || assumedStillCamera)) {
+        if (const auto inverseCamera = InvertAffine(pairingCamera)) {
             // Groups: pairing kind and that pass's identity. Draws of the
             // identity left unpaired join their group (one appearing or going
             // shifted the order of the rest).
@@ -1388,7 +1516,7 @@ VisualDrawMatching BuildVisualDrawMatching(
         }
     }
     static const bool jumpGuard = std::getenv("TRIAEVUM_NO_JUMP_GUARD") == nullptr;
-    if (jumpGuard && matching.CameraDeltaValid) {
+    if (jumpGuard && (matching.CameraDeltaValid || assumedStillCamera)) {
         // World motion of every model/bone matrix with the camera change removed.
         // Only the first model matrix: later bone registers keep leftovers from
         // earlier draws when a model doesn't use them (PICA uniforms persist),
@@ -1398,7 +1526,7 @@ VisualDrawMatching BuildVisualDrawMatching(
                                    const Oot3dPicaVertexUniformState& after) {
             float worst = 0.0F;
             for (size_t first = 20U; first < 21U; first += 3U) {
-                const auto predicted = MultiplyAffine(matching.CameraDelta, AffineAt(after, first));
+                const auto predicted = MultiplyAffine(pairingCamera, AffineAt(after, first));
                 float squared = 0.0F;
                 for (size_t row = 0; row < 3U; ++row) {
                     const float delta = before.Floats[first + row][3] - predicted[row][3];
@@ -1420,6 +1548,9 @@ VisualDrawMatching BuildVisualDrawMatching(
             const auto& before = previous.Draws[match->PreviousIndex].VertexShader.Uniforms;
             const auto& after = current.Draws[currentIndex].VertexShader.Uniforms;
             if (!UsesModelViewLayout(before) || !UsesModelViewLayout(after)) continue;
+            // (A unique pair is trusted when the camera is unknown: it may
+            // have moved.)
+            if (assumedStillCamera && match->Kind == VisualDrawMatchKind::StrictUnique) continue;
             const float limit = match->Kind == VisualDrawMatchKind::StrictUnique ? kMaximumUniqueJump
                                                                                   : kMaximumOrdinalJump;
             if (worldJump(before, after) > limit) {

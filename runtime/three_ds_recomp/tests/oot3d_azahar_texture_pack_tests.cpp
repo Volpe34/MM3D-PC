@@ -125,7 +125,7 @@ TEST_F(Oot3dAzaharTexturePackTest, DumpsAndLoadsModernAzaharPngWithoutOrientatio
     ASSERT_NE(replacement->Rgba8, nullptr);
     EXPECT_EQ(replacement->Width, 8U);
     EXPECT_EQ(replacement->Height, 8U);
-    EXPECT_EQ(*replacement->Rgba8, rgba);
+    EXPECT_TRUE(std::equal(rgba.begin(), rgba.end(), replacement->Rgba8->begin()));
     EXPECT_EQ(replacement->SourcePath, loadDirectory / filename);
     EXPECT_EQ(runtime.Snapshot().LoadDirectory, loadDirectory);
     EXPECT_EQ(runtime.Snapshot().LoadedTextures, 1U);
@@ -191,7 +191,7 @@ TEST_F(Oot3dAzaharTexturePackTest,
         Oot3d::Renderer::AzaharTextureResolveState::Ready);
     ASSERT_NE(ready.Replacement, nullptr);
     ASSERT_NE(ready.Replacement->Rgba8, nullptr);
-    EXPECT_EQ(*ready.Replacement->Rgba8, rgba);
+    EXPECT_TRUE(std::equal(rgba.begin(), rgba.end(), ready.Replacement->Rgba8->begin()));
     EXPECT_EQ(runtime.Snapshot().PendingLoads, 0U);
     EXPECT_EQ(runtime.Snapshot().FailedLoads, 0U);
 }
