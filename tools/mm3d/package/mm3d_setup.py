@@ -157,6 +157,18 @@ def prepare_work(work: Path) -> None:
         shutil.copy2(work / "call_sites.json", work / "aot_program.json")
 
 
+def known_selection(program_path: Path) -> dict | None:
+    recipe = RECIPE / "selection.json.xz"
+    if not recipe.is_file():
+        return None
+    with lzma.open(recipe, "rt") as source:
+        selection = json.load(source)
+    expected = selection.pop("program_fingerprint", None)
+    program = json.loads(program_path.read_text(encoding="utf-8"))
+    actual = hashlib.sha256(json.dumps(program, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return selection if actual == expected else None
+
+
 def translate(work: Path, game: Path) -> None:
     python = sys.executable
     env = dict(os.environ, MM3D_WORK=str(work))
@@ -179,7 +191,14 @@ def translate(work: Path, game: Path) -> None:
     else:
         fail("The code translation did not converge (unexpected for a supported ROM).")
     step("Selecting functions")
-    run([python, MM3D / "mm3d_select.py", work, work / "code_thumbfree.bin", "aot_program.json"], env=env)
+    known = known_selection(work / "aot_program.json")
+    if known is not None:
+        # The translation gave exactly the program the recipe's selection was made
+        # from: the selection (hours with Python on some Windows PCs) is known.
+        print("  the translation matches the recipe: using its function selection")
+        (work / "mm3d_functions.json").write_text(json.dumps(known))
+    else:
+        run([python, MM3D / "mm3d_select.py", work, work / "code_thumbfree.bin", "aot_program.json"], env=env)
     selection = json.loads((work / "mm3d_functions.json").read_text())
     thumb_map = json.loads((work / "thumb_map.json").read_text())
     if selection.get("external_functions"):

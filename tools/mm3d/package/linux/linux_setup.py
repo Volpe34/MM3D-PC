@@ -11,6 +11,7 @@ import hashlib
 import io
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -29,15 +30,22 @@ CAPSTONE = ("https://files.pythonhosted.org/packages/d1/39/17747862222bb062e86b5
 
 
 def download(url: str, sha256: str) -> bytes:
-    for attempt in range(3):
+    context = None
+    for attempt in range(4):
         try:
-            with urllib.request.urlopen(url, timeout=60) as response:
+            with urllib.request.urlopen(url, timeout=60, context=context) as response:
                 data = response.read()
             if hashlib.sha256(data).hexdigest() == sha256:
                 return data
             print("  checksum mismatch, retrying", flush=True)
         except OSError as error:
             print(f"  download failed: {error}", flush=True)
+            if "CERTIFICATE_VERIFY_FAILED" in str(error) and context is None:
+                # No CA certificates on this system: the pinned SHA-256 still
+                # guarantees the file, so fetch it without TLS verification.
+                print("  (no usable CA certificates; the download is verified by its SHA-256)", flush=True)
+                context = ssl._create_unverified_context()
+                continue
         time.sleep(3)
     raise SystemExit(f"\nSETUP FAILED: could not download {url} (check the Internet connection).")
 

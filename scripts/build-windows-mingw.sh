@@ -33,6 +33,21 @@ fi
 cp "$root/tools/mm3d/package/msys2_deps.py" "$msys/add.py"
 (cd "$msys" && python3 add.py SDL2 shaderc glslang spirv-tools spdlog fmt libzip tinyxml2 vulkan-loader \
   vulkan-headers zlib bzip2 xz zstd glew libpng nlohmann-json)
+# MSYS2's DLLs that use C++ were linked against MSYS2's libc++.dll, which
+# re-exports libunwind (_Unwind_Resume); llvm-mingw's does not. spdlog is the
+# only such DLL: rebuild the same version with llvm-mingw (check_pe_imports.py
+# verifies every import of the package).
+overrides="$deps/win-overrides"
+if [ ! -f "$overrides/libspdlog-1.17.dll" ]; then
+  src="$deps/spdlog_src"; mkdir -p "$src" "$overrides"
+  [ -d "$src/spdlog-1.17.0" ] || curl -fL https://github.com/gabime/spdlog/archive/refs/tags/v1.17.0.tar.gz | tar xz -C "$src"
+  cmake -S "$src/spdlog-1.17.0" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE="$root/CMake/toolchain-llvm-mingw.cmake" \
+    -DLLVM_MINGW_ROOT="$llvm" -DMINGW_SYSROOT="$msys/clang64" \
+    -DSPDLOG_BUILD_SHARED=ON -DSPDLOG_FMT_EXTERNAL_HO=ON -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_BUILD_TESTS=OFF
+  ninja -C "$src/build"
+  cp "$src/build/libspdlog.dll" "$overrides/libspdlog-1.17.dll"
+fi
 # The sources include Windows headers in CamelCase; MinGW's are lower case.
 inc="$llvm/x86_64-w64-mingw32/include"
 for h in D3D12.h d3dCommon.h D3Dcompiler.h D3DCompiler.h DbgHelp.h DirectXMath.h DXGIDebug.h DXGIFormat.h \

@@ -74,10 +74,14 @@ def main() -> int:
     if windows:
         for name in ("TriAevum.exe", "triaevum_title_aot.dll", "oot3d_native_pica_aot_compiler.exe"):
             shutil.copy2(runtime / name, out / name)
-        env = dict(os.environ, LLVM_MINGW_ROOT=str(Path.home() / "mm3d_pc/deps/llvm-mingw"),
-                   MINGW_SYSROOT=str(Path.home() / "mm3d_pc/deps/msys2/clang64"))
+        deps = Path.home() / "mm3d_pc/deps"
+        env = dict(os.environ, LLVM_MINGW_ROOT=str(deps / "llvm-mingw"), MINGW_SYSROOT=str(deps / "msys2/clang64"),
+                   WIN_DLL_OVERRIDES=str(deps / "win-overrides"))
         subprocess.run(["python3", HERE / "collect_dlls.py", out / "TriAevum.exe",
                         out / "oot3d_native_pica_aot_compiler.exe", out], env=env, check=True)
+        # Wine runs with missing imports; Windows does not start. Check them all.
+        subprocess.run(["python3", HERE / "check_pe_imports.py", out, deps / "llvm-mingw/bin/llvm-objdump"],
+                       check=True)
         for name in ("Setup.bat", "Play.bat"):
             shutil.copy2(HERE / "windows" / name, out / name)
         (out / "setup").mkdir()
@@ -91,8 +95,11 @@ def main() -> int:
                         *(f"/home/work/{runtime.name}/{name}" for name in
                           ("TriAevum", "triaevum_title_aot.so", "oot3d_native_pica_aot_compiler"))], check=True)
         # The SDK's SDL2 is sdl2-compat, which loads SDL3 at runtime.
-        # Its less common dependencies come along; X11, Wayland and audio are the system's.
-        for name in ("libSDL3.so.0", "libdecor-0.so.0", "libfribidi.so.0", "libXss.so.1", "libXtst.so.6"):
+        # Its less common dependencies come along, and libwayland-client (SDL3 needs
+        # 1.23, Ubuntu 24.04 has 1.22; newer clients work with any compositor).
+        # X11 and audio are the system's.
+        for name in ("libSDL3.so.0", "libdecor-0.so.0", "libfribidi.so.0", "libXss.so.1", "libXtst.so.6",
+                     "libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1"):
             shutil.copy2((args.sdk / "usr/lib/x86_64-linux-gnu" / name).resolve(), out / "lib" / name)
         for name in ("Setup.sh", "Play.sh"):
             shutil.copy2(HERE / "linux" / name, out / name)

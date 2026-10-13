@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """collect_dlls.py <exe/dll>... <out dir>: copy the non-system DLLs they need
 (recursively) from the llvm-mingw and MSYS2 CLANG64 runtime directories.
-Environment: LLVM_MINGW_ROOT, MINGW_SYSROOT."""
+Environment: LLVM_MINGW_ROOT, MINGW_SYSROOT, WIN_DLL_OVERRIDES."""
 import os, shutil, subprocess, sys
 from pathlib import Path
 llvm = Path(os.environ["LLVM_MINGW_ROOT"]); sysroot = Path(os.environ["MINGW_SYSROOT"])
-search = [llvm / "x86_64-w64-mingw32/bin", sysroot / "bin"]
+# WIN_DLL_OVERRIDES: DLLs rebuilt with llvm-mingw, preferred over MSYS2's.
+overrides = [Path(os.environ["WIN_DLL_OVERRIDES"])] if os.environ.get("WIN_DLL_OVERRIDES") else []
+search = [*overrides, llvm / "x86_64-w64-mingw32/bin", sysroot / "bin"]
 objdump = llvm / "bin/llvm-objdump"
 # Provided by Windows or the GPU driver.
 system_prefixes = ("api-ms-win-", "ext-ms-")
