@@ -337,6 +337,9 @@ bool DecodeNativeControlConfig(const nlohmann::json& document,
     parsed.RightStickAimMaximumDegreesPerSecond =
         aim.value("right_stick_max_degrees_per_second",
                   parsed.RightStickAimMaximumDegreesPerSecond);
+    parsed.CameraStickSpeed =
+        aim.value("camera_stick_speed", parsed.CameraStickSpeed);
+    parsed.MenuScale = aim.value("menu_scale", parsed.MenuScale);
     parsed.ControllerGyroscopeSensitivity =
         aim.value("gyroscope_sensitivity",
                   parsed.ControllerGyroscopeSensitivity);
@@ -626,6 +629,8 @@ bool ValidateNativeControlConfig(const NativeControlConfig& config,
       !FiniteInRange(config.MouseFreeCameraUnitsPerPixel, 0.1F, 40.0F) ||
       !FiniteInRange(config.RightStickAimMaximumDegreesPerSecond, 10.0F,
                      1080.0F) ||
+      !FiniteInRange(config.CameraStickSpeed, 0.25F, 4.0F) ||
+      !FiniteInRange(config.MenuScale, 0.0F, 4.0F) ||
       !FiniteInRange(config.ControllerGyroscopeSensitivity, 0.01F, 10.0F) ||
       !FiniteInRange(config.ControllerAccelerometerSensitivity, 0.01F,
                      10.0F)) {
@@ -718,6 +723,8 @@ bool SerializeNativeControlConfigText(const NativeControlConfig& config,
         {"mouse_degrees_per_pixel", config.MouseAimDegreesPerPixel},
         {"right_stick_max_degrees_per_second",
          config.RightStickAimMaximumDegreesPerSecond},
+        {"camera_stick_speed", config.CameraStickSpeed},
+        {"menu_scale", config.MenuScale},
         {"gyroscope_sensitivity",
          config.ControllerGyroscopeSensitivity},
         {"accelerometer_sensitivity",

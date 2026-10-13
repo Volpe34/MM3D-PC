@@ -558,6 +558,17 @@ class NativeControlsSettingsPanel final
     changed |= ControlWidgets::SliderInt(
         "Trigger dead zone", &mControlDraft.TriggerDeadZonePercent,
         0, 50, "%d%%");
+    ImGui::SeparatorText("Camera");
+    changed |= ControlWidgets::SliderFloat(
+        "Camera speed (right stick)", &mControlDraft.CameraStickSpeed,
+        0.5F, 3.0F, "%.2fx");
+    ImGui::SeparatorText("Menu");
+    changed |= ControlWidgets::SliderFloat(
+        "Menu size", &mControlDraft.MenuScale, 0.0F, 3.0F,
+        mControlDraft.MenuScale > 0.0F ? "%.2fx" : "Automatic");
+    if (mControlDraft.MenuScale > 0.0F && mControlDraft.MenuScale < 0.5F) {
+      mControlDraft.MenuScale = 0.5F;
+    }
     if (changed) {
       MarkCustom(mControlDraft, mControlDirty);
     }

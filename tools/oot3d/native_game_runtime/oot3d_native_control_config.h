@@ -86,6 +86,11 @@ struct NativeControlConfig {
   float MouseAimDegreesPerPixel = 0.35F;
   float MouseFreeCameraUnitsPerPixel = 4.0F;
   float RightStickAimMaximumDegreesPerSecond = 180.0F;
+  // The game's camera turn speed from the right stick (MM3D: a multiplier
+  // of the stick the camera reads, 1 = the original).
+  float CameraStickSpeed = 1.0F;
+  // F1 menu size (0: from the window height, 1 at 1080 lines).
+  float MenuScale = 0.0F;
   float ControllerGyroscopeSensitivity = 1.0F;
   float ControllerAccelerometerSensitivity = 1.0F;
   bool NativeAimInvertX = false;

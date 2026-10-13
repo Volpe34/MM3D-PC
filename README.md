@@ -72,6 +72,14 @@ pull requests are welcome.
    desktop distribution has. It takes 10–40 minutes once.
 3. Play with `./Play.sh`.
 
+## Updating
+
+Extract the new release into a new folder and run Setup again with the same
+ROM: it rebuilds the game module for that version, so copying the new files
+over an old folder does not work. Then copy from the old folder
+`data/savedata` (your saves), `data/textures` (an HD pack) and, to keep your
+settings, `data/config`.
+
 ## Shader tour (no stutter on first visits)
 
 At the end of setup, Link visits every scene once, then Deku, Goron, Zora and
@@ -127,6 +135,9 @@ F1 → Controls.
 | Bombers' Notebook | Start |
 | Notebook: schedule / events, alarm, event's map | X / Y / Back |
 | Settings (open / close) | Start+A / Start+B |
+
+The camera's turn speed (right stick) and the size of the F1 menu are in
+F1 → Controls.
 
 ## How it works
 

@@ -382,6 +382,11 @@ struct NativeWidescreenProjectionState {
   // HUD has faded out by then): the presented frame is kept at that point.
   uint32_t PauseCapturePc = 0;
   bool PauseCaptured = false;
+  // MM3D: the play state's calc function (after the pad is read, before the
+  // camera's update) and the F1 camera speed applied to the right stick the
+  // camera reads.
+  uint32_t PlayCalcPc = 0;
+  float CameraStickSpeed = 1.0F;
   // MM3D: the layout draw manager's per-pass function (manager in r0, after
   // mm3d-dekui): the names of the layouts queued for the lower screen.
   uint32_t LayoutPassPc = 0;
@@ -1950,13 +1955,39 @@ void ApplyNativeWidescreenProjectionPolicy(
     uint32_t pc, oot3d::recomp::a32::GuestState &state,
     oot3d::recomp::a32::MemoryBus &memory, void *user) {
   auto &runtime = *static_cast<NativeWidescreenProjectionState *>(user);
-  // TRIAEVUM_FORCE_TATL=<message id> (MM3D tests): Tatl wants to talk
-  // (Player_Update, Player+0x11DCC is Tatl's message).
-  static const uint16_t forcedTatl = [] {
-    const char *value = std::getenv("TRIAEVUM_FORCE_TATL");
-    return value != nullptr ? static_cast<uint16_t>(std::strtoul(value, nullptr, 0)) : uint16_t{0};
-  }();
-  if (forcedTatl != 0U && pc == 0x001F9E80U) memory.Write16(state.r[0] + 0x11DCCU, forcedTatl);
+  if (pc != 0U && pc == runtime.PlayCalcPc) {
+    // GlobalContext = *(*0x72F5C0 + 0x16C), the play state (+0x13D == 4);
+    // its pad state is at +0x28, the right stick's at +0x70.
+    uint32_t root = 0, gctx = 0;
+    uint8_t type = 0;
+    if (memory.Read32(0x0072F5C0U, &root) && memory.Read32(root + 0x16CU, &gctx) && gctx != 0U &&
+        memory.Read8(gctx + 0x13DU, &type) && type == 4U) {
+      // The camera turns by the stick's last raw values (+0x80, +0x84: x and
+      // y, -60..60); the others are left to the rest of the game.
+      if (runtime.CameraStickSpeed != 1.0F) {
+        for (const uint32_t offset : {0x80U, 0x84U}) {
+          uint32_t bits = 0;
+          if (memory.Read32(gctx + offset, &bits))
+            memory.Write32(gctx + offset, std::bit_cast<uint32_t>(std::bit_cast<float>(bits) * runtime.CameraStickSpeed));
+        }
+      }
+      static FILE *cameraSpeedTrace = [] {
+        const char *path = std::getenv("TRIAEVUM_CAMERA_YAW_TRACE");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+      }();
+      uint16_t index = 0;
+      std::array<uint32_t, 6> v{};
+      if (cameraSpeedTrace != nullptr && memory.Read16(gctx + 0xA7AU, &index) && index < 4U) {
+        const uint32_t camera = gctx + 0x408U + index * 0x198U;
+        for (uint32_t i = 0; i < 6U; ++i) memory.Read32(camera + 0x50U + i * 4U, &v[i]);
+        const float dx = std::bit_cast<float>(v[3]) - std::bit_cast<float>(v[0]);
+        const float dz = std::bit_cast<float>(v[5]) - std::bit_cast<float>(v[2]);
+        uint32_t stick = 0;
+        memory.Read32(gctx + 0x78U, &stick);
+        std::fprintf(cameraSpeedTrace, "%.3f %.2f\n", std::atan2(dx, dz) * 57.29578F, std::bit_cast<float>(stick));
+      }
+    }
+  }
   if (pc == Oot3dNativeGame::kNativeQbfA4Blit && runtime.HdFonts && runtime.TraceMemory)
     runtime.HdFonts->ObserveBlit(state, *runtime.TraceMemory);
   if (runtime.TopScreenUiProfile &&
@@ -3779,7 +3810,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       if (!restoration) {
         widescreenProjection.LayoutPassPc = 0x001267E8U;
         blockEntryHooks.push_back(widescreenProjection.LayoutPassPc);
-        if (std::getenv("TRIAEVUM_FORCE_TATL") != nullptr) blockEntryHooks.push_back(0x001F9E80U);
+        widescreenProjection.PlayCalcPc = 0x0014F550U;  // GameState+0x104 of the play state
+        blockEntryHooks.push_back(widescreenProjection.PlayCalcPc);
       }
       // Each draw carries the model instance that submitted it, so frame
       // interpolation pairs a model with itself whatever the draw order.
@@ -6229,6 +6261,34 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               activeTopScreenConfig.FreeCameraSmoothing);
       aimProfileTransform.RightStickInvertX = topScreenAim.InvertX;
       aimProfileTransform.RightStickInvertY = topScreenAim.InvertY;
+    }
+    {
+      const auto &controls = controlConfigRuntime->Snapshot().Config;
+      static const float cameraSpeedOverride = [] {
+        const char *value = std::getenv("TRIAEVUM_CAMERA_STICK_SPEED");
+        return value != nullptr ? std::strtof(value, nullptr) : 0.0F;
+      }();
+      widescreenProjection.CameraStickSpeed =
+          cameraSpeedOverride > 0.0F ? cameraSpeedOverride : controls.CameraStickSpeed;
+      // F1 menu size: the setting, or 1 per 1080 window lines in steps of
+      // a half (1x up to 1440p, 2x at 4K).
+      static float appliedMenuScale = 1.0F;
+      static ImGuiStyle baseStyle = ImGui::GetStyle();
+      const float menuScale =
+          controls.MenuScale > 0.0F
+              ? controls.MenuScale
+              : std::max(1.0F, std::floor(static_cast<float>(window.GetHeight()) / 1080.0F * 2.0F) / 2.0F);
+      if (std::abs(menuScale - appliedMenuScale) > 0.01F) {
+        ImGui::GetStyle() = baseStyle;
+        ImGui::GetStyle().ScaleAllSizes(menuScale);
+        ImGui::GetIO().FontGlobalScale = menuScale;
+        appliedMenuScale = menuScale;
+        // The settings window grows with it (its saved size is the old one).
+        ImGui::SetWindowSize(
+            "OOT3D Graphics",
+            ImVec2(std::min(560.0F * menuScale, static_cast<float>(window.GetWidth()) * 0.9F),
+                   std::min(760.0F * menuScale, static_cast<float>(window.GetHeight()) * 0.9F)));
+      }
     }
     const bool hostGuiVisible =
         gui->GetMenuOrMenubarVisible() || gui->GetAnyGuiWindowVisible();

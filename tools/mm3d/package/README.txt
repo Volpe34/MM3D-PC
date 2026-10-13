@@ -48,6 +48,12 @@ Controls (controller, Xbox names; rebind in F1 > Controls)
   D-pad up = ocarina, D-pad down = masks, L3 = minimap,
   Back = items, Start = Bombers' Notebook, Start+A = settings, Start+B closes them.
   In the Notebook: X = schedule/events, Y = set the alarm, Back = the event's map.
+  Camera speed (right stick) and the F1 menu size: F1 > Controls.
+
+Updating to a new version
+  Extract the new release into a new folder and run Setup again with your ROM
+  (copying new files over an old folder does not work). Then copy data\savedata,
+  data\textures and, to keep your settings, data\config from the old folder.
 
 If something goes wrong
   Send logs\setup.log and logs\setup_download.log (setup problems) or
