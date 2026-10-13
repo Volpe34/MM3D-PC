@@ -1,0 +1,68 @@
+{
+  "format": "oot3d_whole_aot_product_contract_v1",
+  "source_image": {
+    "code": {
+      "operational_id": "oot3d_code_bin",
+      "bytes": 4567040,
+      "sha256": "16a6b0aa4c4784680220a6f780f7f8a73cfb205557aa9f9f0e705179e0613220"
+    },
+    "exheader": {
+      "operational_id": "oot3d_exheader",
+      "bytes": 2048,
+      "sha256": "dbe5fa0174d73bffb75d7cf0fbaa05d3e0ee080df0e257afc58b6c45ae5de3d0"
+    },
+    "base": 1048576,
+    "entrypoint": 1048576,
+    "executable_size": 3973120
+  },
+  "frontend": {
+    "program_format": "oot3d_whole_aot_program_v1",
+    "inventory_sha256": "1445fa0f86b4cdc0938a37a77831d2bf313a5389446811fcec8c282dec51e162",
+    "boundary_audit_sha256": "eaf97f65469065cdb7b90dbb9e393492fcf0d622f263203a1f7e68c7b1217883"
+  },
+  "selection": {
+    "path": "tools/oot3d/native_a32_runtime/whole_aot_functions.json",
+    "format": "oot3d_whole_aot_function_selection_v1",
+    "mode": "all_lowerable",
+    "sha256": "973c1bc506a505151da29bbe06782dc8a3a146d456c48ccbb516c06e56b23aac"
+  },
+  "closure": {
+    "counts": {
+      "functions": 12442,
+      "selected_functions": 12439,
+      "host_boundaries": 3,
+      "blocks": 162719,
+      "unique_instructions": 924535,
+      "emitted_instructions": 963498,
+      "unclaimed_blocks": 0,
+      "unresolved_static_edges": 0,
+      "lowering_rejections": 0,
+      "performance_exclusions": 0,
+      "dispatch_aliases": 421,
+      "dispatcher_entries": 162710,
+      "atomic_host_blocks": 9
+    },
+    "host_boundaries": [
+      {
+        "entry": 3177432,
+        "name": "PicaCommandWriter_WriteRegisterRange"
+      },
+      {
+        "entry": 3588468,
+        "name": "Mtx3x4_Multiply"
+      },
+      {
+        "entry": 3613220,
+        "name": "Mtx3x4_CopyIfDistinct"
+      }
+    ],
+    "residual_a32_entries": 0
+  },
+  "codegen": {
+    "format": "oot3d_whole_aot_cpp_v1",
+    "shard_count": 256,
+    "shard_strategy": "affinity",
+    "packed_op_fallback": "forbidden",
+    "runtime_backend": "NRI_Vulkan"
+  }
+}

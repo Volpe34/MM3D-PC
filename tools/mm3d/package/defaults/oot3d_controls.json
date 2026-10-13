@@ -1,0 +1,243 @@
+{
+  "aim": {
+    "accelerometer_sensitivity": 1.0,
+    "gyroscope_sensitivity": 1.0,
+    "invert_x": false,
+    "invert_y": false,
+    "mouse_degrees_per_pixel": 0.3499999940395355,
+    "right_stick_max_degrees_per_second": 180.0,
+    "source": "automatic"
+  },
+  "analog": {
+    "look_dead_zone_percent": 20,
+    "movement_dead_zone_percent": 18,
+    "movement_stick": "left",
+    "trigger_dead_zone_percent": 20
+  },
+  "bindings": {
+    "a": {
+      "gamepad": "a",
+      "keyboard_primary": "space",
+      "keyboard_secondary": "z",
+      "mouse": "left"
+    },
+    "b": {
+      "gamepad": "b",
+      "keyboard_primary": "x",
+      "keyboard_secondary": "none",
+      "mouse": "back"
+    },
+    "dpad_down": {
+      "gamepad": "dpad_down",
+      "keyboard_primary": "arrow_down",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "dpad_left": {
+      "gamepad": "dpad_left",
+      "keyboard_primary": "arrow_left",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "dpad_right": {
+      "gamepad": "dpad_right",
+      "keyboard_primary": "arrow_right",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "dpad_up": {
+      "gamepad": "dpad_up",
+      "keyboard_primary": "arrow_up",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "gear": {
+      "gamepad": "none",
+      "keyboard_primary": "g",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "item_slot_1": {
+      "gamepad": "left_shoulder",
+      "keyboard_primary": "r",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "item_slot_2": {
+      "gamepad": "right_shoulder",
+      "keyboard_primary": "t",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "items": {
+      "gamepad": "none",
+      "keyboard_primary": "i",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "l": {
+      "gamepad": "left_trigger",
+      "keyboard_primary": "q",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "look_down": {
+      "gamepad": "none",
+      "keyboard_primary": "numpad_2",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "look_left": {
+      "gamepad": "none",
+      "keyboard_primary": "numpad_4",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "look_right": {
+      "gamepad": "none",
+      "keyboard_primary": "numpad_6",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "look_up": {
+      "gamepad": "none",
+      "keyboard_primary": "numpad_8",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "map": {
+      "gamepad": "dpad_down",
+      "keyboard_primary": "m",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "masks": {
+      "gamepad": "dpad_down",
+      "keyboard_primary": "k",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "minimap": {
+      "gamepad": "dpad_left",
+      "keyboard_primary": "n",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "move_backward": {
+      "gamepad": "none",
+      "keyboard_primary": "s",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "move_forward": {
+      "gamepad": "none",
+      "keyboard_primary": "w",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "move_left": {
+      "gamepad": "none",
+      "keyboard_primary": "a",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "move_right": {
+      "gamepad": "none",
+      "keyboard_primary": "d",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "notebook": {
+      "gamepad": "none",
+      "keyboard_primary": "b",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "ocarina": {
+      "gamepad": "dpad_up",
+      "keyboard_primary": "o",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "r": {
+      "gamepad": "right_trigger",
+      "keyboard_primary": "e",
+      "keyboard_secondary": "none",
+      "mouse": "right"
+    },
+    "select": {
+      "gamepad": "back",
+      "keyboard_primary": "tab",
+      "keyboard_secondary": "backspace",
+      "mouse": "none"
+    },
+    "start": {
+      "gamepad": "start",
+      "keyboard_primary": "enter",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "view": {
+      "gamepad": "right_stick",
+      "keyboard_primary": "f",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "x": {
+      "gamepad": "y",
+      "keyboard_primary": "c",
+      "keyboard_secondary": "none",
+      "mouse": "forward"
+    },
+    "y": {
+      "gamepad": "x",
+      "keyboard_primary": "v",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "zl": {
+      "gamepad": "none",
+      "keyboard_primary": "2",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    },
+    "zr": {
+      "gamepad": "none",
+      "keyboard_primary": "1",
+      "keyboard_secondary": "none",
+      "mouse": "none"
+    }
+  },
+  "calibration": {
+    "accelerometer_neutral": [
+      0.0,
+      -1.0,
+      0.0
+    ],
+    "controller_guid": "",
+    "controller_serial": "",
+    "gyroscope_bias_dps": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "capture_mouse": true,
+  "controller_guid": "",
+  "controller_serial": "",
+  "controller_touchpad": {
+    "enabled": true,
+    "index": 0
+  },
+  "devices": {
+    "controller": true,
+    "keyboard": true,
+    "mouse": true
+  },
+  "free_camera": {
+    "mouse_units_per_pixel": 4.0,
+    "source": "automatic"
+  },
+  "profile": "custom",
+  "schema": "oot3d_native_controls_v1"
+}

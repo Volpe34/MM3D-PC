@@ -1,0 +1,1661 @@
+{
+    "CVars": {
+        "": {
+            "SdlWindowedFullscreen": 0
+        },
+        "SdlWindowedFullscreen": 0
+    },
+    "Graphics": {
+        "AA": {
+            "Mode": "Off",
+            "MsaaSamples": 1,
+            "TAA": {
+                "ClampExpansion": 0.05000000074505806,
+                "HistoryWeight": 0.8999999761581421,
+                "Sharpness": 0.10000000149011612
+            },
+            "Upscaler": {
+                "Provider": "NIS",
+                "Quality": "Quality",
+                "Sharpness": 0.3499999940395355
+            }
+        },
+        "Camera": {
+            "FovMultiplier": 1.0
+        },
+        "Effects": {
+            "AO": {
+                "BlurPassCount": 2,
+                "DetailStrength": 0.5,
+                "FadeOutFrom": 50.0,
+                "FadeOutTo": 300.0,
+                "HorizonAngleThreshold": 0.05999999865889549,
+                "Mode": "Off",
+                "Quality": 0,
+                "Radius": 1.0,
+                "ShadowClamp": 0.9800000190734863,
+                "ShadowPower": 1.5,
+                "Sharpness": 0.9800000190734863,
+                "Strength": 1.0
+            },
+            "DirectionalShadows": {
+                "DepthBiasConstant": 1.25,
+                "DepthBiasSlope": 1.75,
+                "DepthPadding": 300.0,
+                "MaximumDistance": 2400.0,
+                "Mode": "Off",
+                "PcfRadius": 1,
+                "Resolution": 1024,
+                "Stabilize": true,
+                "Strength": 0.800000011920929
+            },
+            "Reflections": {
+                "DebugView": 0,
+                "EdgeFade": 0.07999999821186066,
+                "Materials": null,
+                "MaxDistance": 1500.0,
+                "MaxSteps": 40,
+                "Mode": "Off",
+                "RoughnessBias": 0.0,
+                "Strength": 0.6499999761581421,
+                "Thickness": 8.0
+            },
+            "Toon": {
+                "BandSoftness": 0.2280000001192093,
+                "CustomLightBands": false,
+                "LightBandLevels": [
+                    0.0,
+                    0.3333333432674408,
+                    0.6666666865348816,
+                    1.0,
+                    1.0,
+                    1.0
+                ],
+                "LightBandThresholds": [
+                    0.1666666716337204,
+                    0.5,
+                    0.8333333134651184,
+                    1.0,
+                    1.0
+                ],
+                "LightBands": 4,
+                "Mode": "Off",
+                "OutlineDepthSensitivity": 1.0,
+                "OutlineEnabled": false,
+                "OutlineNormalSensitivity": 1.0,
+                "OutlineOpacity": 0.8500000238418579,
+                "OutlineSoftness": 1.0,
+                "OutlineTint": [
+                    0.029999999329447746,
+                    0.03999999910593033,
+                    0.05999999865889549
+                ],
+                "OutlineWidth": 1.25,
+                "RimStrength": 0.3400000035762787,
+                "RimTint": [
+                    1.0,
+                    0.9300000071525574,
+                    0.7200000286102295
+                ],
+                "RimWidth": 3.1700000762939453,
+                "Saturation": 1.090000033378601,
+                "ShadowStrength": 1.0,
+                "ShadowTint": [
+                    0.47999998927116394,
+                    0.5600000023841858,
+                    0.7200000286102295
+                ]
+            }
+        },
+        "FrameRate": {
+            "Mode": "Uncapped"
+        },
+        "Grass": {
+            "Appearance": {
+                "BladeCurvature": 0.0,
+                "BladeDroop": 0.0,
+                "BladeSegments": 2,
+                "BladeTwistDegrees": 0.0,
+                "HeightScale": 1.0,
+                "ReceiveFog": true,
+                "ReceiveLighting": true,
+                "RootColor": [
+                    0.054999999701976776,
+                    0.1899999976158142,
+                    0.03500000014901161
+                ],
+                "ShapeVariation": 0.0,
+                "TextureColorInfluence": 0.0,
+                "TextureRootBrightness": 0.6499999761581421,
+                "TextureTipBrightness": 1.149999976158142,
+                "TipColor": [
+                    0.3400000035762787,
+                    0.7200000286102295,
+                    0.11999999731779099
+                ],
+                "ToonRimEnabled": true,
+                "ToonRimFadeEnd": 800.0,
+                "ToonRimFadeStart": 200.0
+            },
+            "Budget": {
+                "DrawDistance": 0.0,
+                "MaxInstancesPerRoom": 0
+            },
+            "Generation": {
+                "BladeHeightMax": 42.0,
+                "BladeHeightMin": 18.0,
+                "BladeWidthMax": 4.5,
+                "BladeWidthMin": 1.7999999523162842,
+                "ClusterCoverage": 0.6499999761581421,
+                "ClusterScale": 300.0,
+                "ClusterStrength": 0.0,
+                "IndividualRandomness": 1.0,
+                "InstancesPerSquareMeter": 8.0,
+                "MinimumSpacing": 8.0,
+                "Seed": 1
+            },
+            "LinkInteraction": {
+                "ColliderHeightMultiplier": 1.0,
+                "ColliderRadiusMultiplier": 1.0,
+                "CollisionPush": 1.0,
+                "Damping": 1.0,
+                "FieldRadius": 600.0,
+                "FieldResolution": 128,
+                "MaximumBend": 0.8500000238418579,
+                "RecoverySeconds": 1.0,
+                "VelocityResponse": 0.6499999761581421,
+                "VerticalMargin": 12.0
+            },
+            "Performance": {
+                "CullingClusterSize": 300.0,
+                "DensityFadeFraction": 0.10000000149011612,
+                "DrawFadeFraction": 0.15000000596046448,
+                "FarBladeSegments": 1,
+                "FarDensity": 0.30000001192092896,
+                "FarTuftBladeCount": 5,
+                "FarTuftDensity": 1.0,
+                "FarTuftSpread": 1.0,
+                "FarTuftsEnabled": true,
+                "FrustumCulling": true,
+                "LodEndFraction": 0.800000011920929,
+                "LodReferenceDistance": 1.0,
+                "LodStartFraction": 0.44999998807907104,
+                "MidrangeAdaptiveCapacity": 128,
+                "MidrangeAdaptiveEnabled": false,
+                "MidrangeClusterCellExtent": 22.0,
+                "MidrangeClustersEnabled": false,
+                "MidrangeFarBladeFraction": 0.25,
+                "SegmentLodEndDistance": 800.0,
+                "SegmentLodSoftness": 0.5,
+                "SegmentLodStartDistance": 200.0,
+                "TuftTransitionFraction": 0.20000000298023224
+            },
+            "Quality": "Off",
+            "Sources": [
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 2,
+                    "Target": {
+                        "AssetName": "gb_yuka_01c (z2_30gyoson_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "bf01af46d4b6d0d3",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 3,
+                    "Target": {
+                        "AssetName": "Zm_yuka_02b (z2_31misaki_0)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "54027d341d66df79",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 4,
+                    "Target": {
+                        "AssetName": "sou_yuka_01 (z2_sougen_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a71527595d4753c5",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 5,
+                    "Target": {
+                        "AssetName": "turi_u_yuka_02 (z2_turibori2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "c40388b43000ee57",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 6,
+                    "Target": {
+                        "AssetName": "kks_yuka_01 (kakusiana_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "cfdae1652432306a",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 7,
+                    "Target": {
+                        "AssetName": "gom_yuka_01 (z2_koeponarace_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "eb960184e1042b51",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 8,
+                    "Target": {
+                        "AssetName": "clnorth_yuka_02 (z2_backtown_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "cd5e05a66f1fdb87",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 9,
+                    "Target": {
+                        "AssetName": "coc_yuka_01 (z2_f01c_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "9300e4a0f1e898a3",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 10,
+                    "Target": {
+                        "AssetName": "farm_yuka_01 (z2_f01_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "4355d8cc98c94c81",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 11,
+                    "Target": {
+                        "AssetName": "ym2_yuka_01 (z2_10yukiyamanomura2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "64c475bb70920182",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 12,
+                    "Target": {
+                        "AssetName": "clsouth_kitayuk (z2_clocktower_0)",
+                        "Height": 32,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "79e6905220873406",
+                        "Width": 32
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 13,
+                    "Target": {
+                        "AssetName": "kks_R12_yuka_01 (kakusiana_12)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "337c5561c50d9740",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 14,
+                    "Target": {
+                        "AssetName": "dek_yuka_03 (z2_22dekucity_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "e87335fe89676159",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 15,
+                    "Target": {
+                        "AssetName": "taki_yuka_03 (z2_35taki_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "52d4d3ab6204fd18",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 16,
+                    "Target": {
+                        "AssetName": "haka_day3_ten_0 (z2_danpei2test_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "691d0dfec9850abd",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 17,
+                    "Target": {
+                        "AssetName": "dog_yuka_01 (z2_f01_b_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "128e5b04aa2a675d",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 18,
+                    "Target": {
+                        "AssetName": "turi_u_yuka_01 (z2_turibori2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a800f256e4b8790a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 19,
+                    "Target": {
+                        "AssetName": "gom_track_01 (z2_koeponarace_0)",
+                        "Height": 512,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "f3dd949b85ca50fc",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 20,
+                    "Target": {
+                        "AssetName": "og_yuka_01 (z2_openingdan_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "c3a18acfc987805a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 21,
+                    "Target": {
+                        "AssetName": "og_yuka_02 (z2_openingdan_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "1a248a1c1c379f9b",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 22,
+                    "Target": {
+                        "AssetName": "km_yuka_05 (z2_24kemonomiti_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "d5dc7dc30427d6e8",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 23,
+                    "Target": {
+                        "AssetName": "km_yuka_01 (z2_24kemonomiti_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "1c638a7c265bd8cd",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 24,
+                    "Target": {
+                        "AssetName": "lw_yuka_02 (z2_lost_woods_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "957daf0bb595e9c2",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 25,
+                    "Target": {
+                        "AssetName": "kks_R13_yuka_01 (kakusiana_13)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "b4e7c5003fa73b00",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 26,
+                    "Target": {
+                        "AssetName": "kks_R04_yuka_01 (kakusiana_4)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "5343fb3ec08c7ba1",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 27,
+                    "Target": {
+                        "AssetName": "Zm_yuka_01 (z2_31misaki_0)",
+                        "Height": 512,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "3cf55c8e34882c9b",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 28,
+                    "Target": {
+                        "AssetName": "farm_yuka_02 (z2_f01_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "998bd119424e308d",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 29,
+                    "Target": {
+                        "AssetName": "nm_yuka_02 (z2_20sichitai2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "ed7e061425481e86",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 30,
+                    "Target": {
+                        "AssetName": "nm_r03_yuka_02 (z2_20sichitai2_3)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "15d43613a168ca9b",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 31,
+                    "Target": {
+                        "AssetName": "dek_yuka_01 (z2_22dekucity_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "8363d8af70da9935",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 32,
+                    "Target": {
+                        "AssetName": "dek_02_yuka_01e (z2_22dekucity_2)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "971ff01844631abf",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 33,
+                    "Target": {
+                        "AssetName": "fs_yuka_01 (z2_26sarunomori_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a3a6cc268194109a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 1,
+                    "Target": {
+                        "AssetName": "tl_yuka_02 (z2_00keikoku_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "7e3021970fd354a5",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                }
+            ],
+            "Wind": {
+                "DirectionDegrees": 0.0,
+                "GustFrequency": 0.3499999940395355,
+                "GustStrength": 0.3499999940395355,
+                "Randomness": 1.0,
+                "SpatialScale": 1.0,
+                "Speed": 0.0,
+                "Strength": 0.0,
+                "Turbulence": 0.25
+            }
+        },
+        "GrassSavedPreset": {
+            "Appearance": {
+                "BladeCurvature": 0.0,
+                "BladeDroop": 0.0,
+                "BladeSegments": 2,
+                "BladeTwistDegrees": 0.0,
+                "HeightScale": 1.0,
+                "ReceiveFog": true,
+                "ReceiveLighting": true,
+                "RootColor": [
+                    0.054999999701976776,
+                    0.1899999976158142,
+                    0.03500000014901161
+                ],
+                "ShapeVariation": 0.0,
+                "TextureColorInfluence": 0.0,
+                "TextureRootBrightness": 0.6499999761581421,
+                "TextureTipBrightness": 1.149999976158142,
+                "TipColor": [
+                    0.3400000035762787,
+                    0.7200000286102295,
+                    0.11999999731779099
+                ],
+                "ToonRimEnabled": true,
+                "ToonRimFadeEnd": 800.0,
+                "ToonRimFadeStart": 200.0
+            },
+            "Budget": {
+                "DrawDistance": 0.0,
+                "MaxInstancesPerRoom": 0
+            },
+            "Generation": {
+                "BladeHeightMax": 42.0,
+                "BladeHeightMin": 18.0,
+                "BladeWidthMax": 4.5,
+                "BladeWidthMin": 1.7999999523162842,
+                "ClusterCoverage": 0.6499999761581421,
+                "ClusterScale": 300.0,
+                "ClusterStrength": 0.0,
+                "IndividualRandomness": 1.0,
+                "InstancesPerSquareMeter": 8.0,
+                "MinimumSpacing": 8.0,
+                "Seed": 1
+            },
+            "LinkInteraction": {
+                "ColliderHeightMultiplier": 1.0,
+                "ColliderRadiusMultiplier": 1.0,
+                "CollisionPush": 1.0,
+                "Damping": 1.0,
+                "FieldRadius": 600.0,
+                "FieldResolution": 128,
+                "MaximumBend": 0.8500000238418579,
+                "RecoverySeconds": 1.0,
+                "VelocityResponse": 0.6499999761581421,
+                "VerticalMargin": 12.0
+            },
+            "Performance": {
+                "CullingClusterSize": 300.0,
+                "DensityFadeFraction": 0.10000000149011612,
+                "DrawFadeFraction": 0.15000000596046448,
+                "FarBladeSegments": 1,
+                "FarDensity": 0.30000001192092896,
+                "FarTuftBladeCount": 5,
+                "FarTuftDensity": 1.0,
+                "FarTuftSpread": 1.0,
+                "FarTuftsEnabled": true,
+                "FrustumCulling": true,
+                "LodEndFraction": 0.800000011920929,
+                "LodReferenceDistance": 0.0,
+                "LodStartFraction": 0.44999998807907104,
+                "MidrangeAdaptiveCapacity": 128,
+                "MidrangeAdaptiveEnabled": false,
+                "MidrangeClusterCellExtent": 22.0,
+                "MidrangeClustersEnabled": false,
+                "MidrangeFarBladeFraction": 0.25,
+                "SegmentLodEndDistance": 800.0,
+                "SegmentLodSoftness": 0.5,
+                "SegmentLodStartDistance": 200.0,
+                "TuftTransitionFraction": 0.20000000298023224
+            },
+            "Quality": "Off",
+            "Sources": [
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 1,
+                    "Target": {
+                        "AssetName": "tl_yuka_02 (z2_00keikoku_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "7e3021970fd354a5",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 2,
+                    "Target": {
+                        "AssetName": "gb_yuka_01c (z2_30gyoson_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "bf01af46d4b6d0d3",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 3,
+                    "Target": {
+                        "AssetName": "Zm_yuka_02b (z2_31misaki_0)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "54027d341d66df79",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 4,
+                    "Target": {
+                        "AssetName": "sou_yuka_01 (z2_sougen_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a71527595d4753c5",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 5,
+                    "Target": {
+                        "AssetName": "turi_u_yuka_02 (z2_turibori2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "c40388b43000ee57",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 6,
+                    "Target": {
+                        "AssetName": "kks_yuka_01 (kakusiana_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "cfdae1652432306a",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 7,
+                    "Target": {
+                        "AssetName": "gom_yuka_01 (z2_koeponarace_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "eb960184e1042b51",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 8,
+                    "Target": {
+                        "AssetName": "clnorth_yuka_02 (z2_backtown_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "cd5e05a66f1fdb87",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 9,
+                    "Target": {
+                        "AssetName": "coc_yuka_01 (z2_f01c_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "9300e4a0f1e898a3",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 10,
+                    "Target": {
+                        "AssetName": "farm_yuka_01 (z2_f01_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "4355d8cc98c94c81",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 11,
+                    "Target": {
+                        "AssetName": "ym2_yuka_01 (z2_10yukiyamanomura2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "64c475bb70920182",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 12,
+                    "Target": {
+                        "AssetName": "clsouth_kitayuk (z2_clocktower_0)",
+                        "Height": 32,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "79e6905220873406",
+                        "Width": 32
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 13,
+                    "Target": {
+                        "AssetName": "kks_R12_yuka_01 (kakusiana_12)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "337c5561c50d9740",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 14,
+                    "Target": {
+                        "AssetName": "dek_yuka_03 (z2_22dekucity_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "e87335fe89676159",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 15,
+                    "Target": {
+                        "AssetName": "taki_yuka_03 (z2_35taki_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "52d4d3ab6204fd18",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 16,
+                    "Target": {
+                        "AssetName": "haka_day3_ten_0 (z2_danpei2test_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "691d0dfec9850abd",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 17,
+                    "Target": {
+                        "AssetName": "dog_yuka_01 (z2_f01_b_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "128e5b04aa2a675d",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 18,
+                    "Target": {
+                        "AssetName": "turi_u_yuka_01 (z2_turibori2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a800f256e4b8790a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 19,
+                    "Target": {
+                        "AssetName": "gom_track_01 (z2_koeponarace_0)",
+                        "Height": 512,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "f3dd949b85ca50fc",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 20,
+                    "Target": {
+                        "AssetName": "og_yuka_01 (z2_openingdan_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "c3a18acfc987805a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 21,
+                    "Target": {
+                        "AssetName": "og_yuka_02 (z2_openingdan_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "1a248a1c1c379f9b",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 22,
+                    "Target": {
+                        "AssetName": "km_yuka_05 (z2_24kemonomiti_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "d5dc7dc30427d6e8",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 23,
+                    "Target": {
+                        "AssetName": "km_yuka_01 (z2_24kemonomiti_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "1c638a7c265bd8cd",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 24,
+                    "Target": {
+                        "AssetName": "lw_yuka_02 (z2_lost_woods_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "957daf0bb595e9c2",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 25,
+                    "Target": {
+                        "AssetName": "kks_R13_yuka_01 (kakusiana_13)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "b4e7c5003fa73b00",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 26,
+                    "Target": {
+                        "AssetName": "kks_R04_yuka_01 (kakusiana_4)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "5343fb3ec08c7ba1",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 27,
+                    "Target": {
+                        "AssetName": "Zm_yuka_01 (z2_31misaki_0)",
+                        "Height": 512,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "3cf55c8e34882c9b",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 28,
+                    "Target": {
+                        "AssetName": "farm_yuka_02 (z2_f01_0)",
+                        "Height": 256,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "998bd119424e308d",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 29,
+                    "Target": {
+                        "AssetName": "nm_yuka_02 (z2_20sichitai2_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "ed7e061425481e86",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 30,
+                    "Target": {
+                        "AssetName": "nm_r03_yuka_02 (z2_20sichitai2_3)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "15d43613a168ca9b",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 31,
+                    "Target": {
+                        "AssetName": "dek_yuka_01 (z2_22dekucity_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "8363d8af70da9935",
+                        "Width": 128
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 32,
+                    "Target": {
+                        "AssetName": "dek_02_yuka_01e (z2_22dekucity_2)",
+                        "Height": 64,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "971ff01844631abf",
+                        "Width": 64
+                    },
+                    "Wrap": "Material"
+                },
+                {
+                    "Channel": "Green",
+                    "InputBlack": 0.07999999821186066,
+                    "InputWhite": 0.30000001192092896,
+                    "Invert": false,
+                    "MaximumSlopeDegrees": 40.0,
+                    "NormalOffset": 0.5,
+                    "OutputBlack": 0.0,
+                    "OutputWhite": 1.0,
+                    "ResponseExponent": 1.0,
+                    "RuleId": 33,
+                    "Target": {
+                        "AssetName": "fs_yuka_01 (z2_26sarunomori_0)",
+                        "Height": 128,
+                        "MapperSlotMask": 7,
+                        "Rgba8Hash": "a3a6cc268194109a",
+                        "Width": 256
+                    },
+                    "Wrap": "Material"
+                }
+            ],
+            "Wind": {
+                "DirectionDegrees": 0.0,
+                "GustFrequency": 0.3499999940395355,
+                "GustStrength": 0.3499999940395355,
+                "Randomness": 1.0,
+                "SpatialScale": 1.0,
+                "Speed": 0.0,
+                "Strength": 0.0,
+                "Turbulence": 0.25
+            }
+        },
+        "Output": {
+            "Height": 1440,
+            "RefreshRate": 60,
+            "Width": 2560
+        },
+        "Presentation": {
+            "VSync": false
+        },
+        "Preset": "Custom",
+        "RenderScale": 1.0,
+        "SchemaVersion": 11,
+        "TexturePacks": {
+            "Azahar": {
+                "DumpDirectory": "",
+                "DumpTextures": false,
+                "LoadCustomTextures": false,
+                "LoadDirectory": ""
+            }
+        },
+        "Window": {
+            "Display": 0,
+            "Mode": "ExclusiveFullscreen"
+        }
+    },
+    "Window": {
+        "AudioBackend": "sdl",
+        "Backend": {
+            "Id": 4,
+            "Name": "Vulkan (OOT3D)"
+        },
+        "Fullscreen": {
+            "Enabled": true,
+            "Height": 1440,
+            "Width": 2560
+        },
+        "Height": 720,
+        "PositionX": 0,
+        "PositionY": 0,
+        "Width": 1280
+    }
+}

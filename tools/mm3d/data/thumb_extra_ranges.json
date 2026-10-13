@@ -1,0 +1,5 @@
+{
+  "format": "mm3d_thumb_extra_ranges_v1",
+  "ranges": [],
+  "note": "Empty: Thumb code reached only through ARM interworking veneers (ADD Rx,PC,#1; BX Rx) is discovered by thumb_to_a32.py."
+}

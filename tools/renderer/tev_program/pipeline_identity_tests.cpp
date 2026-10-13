@@ -1,0 +1,173 @@
+#include "fast/renderer3ds/pica_pipeline_identity.h"
+#include "fast/renderer3ds/nri_pica_pipeline_identity.h"
+#include "fast/renderer3ds/pica_device_pipeline_pool.h"
+#include "fast/renderer3ds/pica_render_backend.h"
+#include <iostream>
+#include <type_traits>
+
+using namespace Fast::Renderer3ds;
+void Check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
+int main(){
+    try {
+        unsigned destroyed = 0;
+        const auto makeObject = [&](int value) {
+            return std::shared_ptr<int>(new int(value), [&](int* p) { ++destroyed; delete p; });
+        };
+        PicaDevicePipelinePool<int> pool(1);
+        auto active = makeObject(10);
+        pool.Retain({1}, active);
+        active.reset();
+        auto reused = pool.Find({1});
+        Check(reused && *reused == 10 && destroyed == 0, "retiring an alias destroyed reusable pipeline");
+        auto second = makeObject(20);
+        pool.Retain({2}, second);
+        second.reset();
+        pool.Prune();
+        Check(pool.Size() == 2 && destroyed == 0, "active object counted against idle budget");
+        auto third = makeObject(30);
+        pool.Retain({3}, third);
+        third.reset();
+        pool.Prune();
+        Check(!pool.Find({2}) && destroyed == 1 && pool.Find({1}) == reused,
+              "idle LRU eviction removed an active object");
+        reused.reset();
+        pool.Prune();
+        Check(pool.Size() == 1 && destroyed == 2, "idle pipeline limit not enforced");
+        pool.Clear();
+        Check(pool.Size() == 0 && destroyed == 3, "device teardown leaked retained pipelines");
+        PicaDevicePipelinePool<int> noRetention(0);
+        auto pinned = makeObject(40);
+        noRetention.Retain({4}, pinned);
+        noRetention.Prune();
+        Check(noRetention.Size() == 1, "zero idle budget invalidated active pipeline");
+        pinned.reset(); noRetention.Prune();
+        Check(noRetention.Size() == 0 && destroyed == 4, "zero idle budget retained idle pipeline");
+        static_assert(!std::is_convertible_v<NriPicaPipelineId, VkPipeline>);
+        static_assert(!std::is_convertible_v<VkPipeline, NriPicaPipelineId>);
+        PicaDevicePipelineRecord ownedOnly;
+        ownedOnly.Id={1};ownedOnly.NriPreparationAttempted=true;
+        Check(bool(ownedOnly.Id) && ownedOnly.Vulkan==VK_NULL_HANDLE,
+              "logical NRI identity requires a Vulkan object");
+        PicaPipelineProgramIdentity program{{1,2,100},{3,4,200},{5,6,300},true};
+        NriPicaGraphicsPipelineDesc state;
+        state.ColorAttachmentCount=1;state.ColorFormats[0]=VK_FORMAT_R8G8B8A8_UNORM;
+        state.Colors[0].colorWriteMask=15;
+        state.DepthTest=true;state.StencilTest=true;state.LogicOpEnabled=true;
+        state.Colors[0].blendEnable=true;
+        PicaDrawView draw;
+        std::array<PicaVertexBindingView,1> bindings{};
+        std::array<PicaVertexAttributeView,1> attributes{};
+        bindings[0].ByteStride=16;attributes[0].ComponentCount=4;
+        draw.VertexBindings=bindings;draw.VertexAttributes=attributes;
+        const auto key=BuildPicaPipelineIdentity(program,draw,state,true);
+        for(unsigned material=0;material<1024;++material){
+            draw.VertexShaderKey=material;draw.FragmentShaderKey=material*3;
+            draw.SubmissionId=material;draw.CanonicalPipelineId=material*7;
+            draw.ViewportWidth=float(material+1);draw.GeometryIdentity=material*5;
+            Check(key==BuildPicaPipelineIdentity(program,draw,state,true),"draw/material/dynamic state created a pipeline variant");
+        }
+        unsigned changes=0;
+        const auto changed=[&](auto mutate){auto s=state;mutate(s);++changes;
+            Check(key!=BuildPicaPipelineIdentity(program,draw,s,true),"immutable GPU state omitted from key");};
+        changed([](auto& s){s.Topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;});
+        changed([](auto& s){s.CullMode=VK_CULL_MODE_BACK_BIT;});
+        changed([](auto& s){s.FrontFace=VK_FRONT_FACE_CLOCKWISE;});
+        changed([](auto& s){s.Samples=VK_SAMPLE_COUNT_4_BIT;});
+        changed([](auto& s){s.AlphaToCoverage=true;});
+        changed([](auto& s){s.DepthTest=false;});
+        changed([](auto& s){s.DepthWrite=true;});
+        changed([](auto& s){s.DepthCompare=VK_COMPARE_OP_LESS;});
+        changed([](auto& s){s.StencilTest=false;});
+        for(bool front:{false,true})for(unsigned field=0;field<7;++field)changed([&](auto& s){
+            auto& v=front?s.FrontStencil:s.BackStencil;
+            switch(field){case 0:v.failOp=VK_STENCIL_OP_REPLACE;break;case 1:v.passOp=VK_STENCIL_OP_REPLACE;break;
+                case 2:v.depthFailOp=VK_STENCIL_OP_REPLACE;break;case 3:v.compareOp=VK_COMPARE_OP_EQUAL;break;
+                case 4:v.compareMask=3;break;case 5:v.writeMask=3;break;case 6:v.reference=3;break;}
+        });
+        changed([](auto& s){s.LogicOpEnabled=false;});
+        changed([](auto& s){s.LogicOp=VK_LOGIC_OP_XOR;});
+        changed([](auto& s){s.DepthStencilFormat=VK_FORMAT_D24_UNORM_S8_UINT;});
+        changed([](auto& s){s.ColorAttachmentCount=2;});
+        changed([](auto& s){s.ColorFormats[0]=VK_FORMAT_R16G16B16A16_SFLOAT;});
+        for(unsigned field=0;field<8;++field)changed([&](auto& s){auto& c=s.Colors[0];
+            switch(field){case 0:c.blendEnable=false;break;case 1:c.srcColorBlendFactor=VK_BLEND_FACTOR_ONE;break;
+                case 2:c.dstColorBlendFactor=VK_BLEND_FACTOR_ONE;break;case 3:c.colorBlendOp=VK_BLEND_OP_SUBTRACT;break;
+                case 4:c.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;break;case 5:c.dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE;break;
+                case 6:c.alphaBlendOp=VK_BLEND_OP_SUBTRACT;break;case 7:c.colorWriteMask=3;break;}
+        });
+        for(unsigned stage=0;stage<3;++stage)for(unsigned field=0;field<3;++field){auto p=program;
+            auto& id=stage==0?p.Vertex:(stage==1?p.Fragment:p.NriFragment);++id[field];
+            Check(key!=BuildPicaPipelineIdentity(p,draw,state,true),"effective shader identity omitted");
+        }
+        auto p=program;p.NriDescriptorContract=false;
+        auto dormant=state;
+        dormant.DepthTest=false;dormant.StencilTest=false;dormant.LogicOpEnabled=false;
+        dormant.Colors[0].blendEnable=false;
+        const auto dormantKey=BuildPicaPipelineIdentity(program,draw,dormant,true);
+        dormant.DepthCompare=VK_COMPARE_OP_NEVER;
+        dormant.FrontStencil={VK_STENCIL_OP_REPLACE,VK_STENCIL_OP_INVERT,VK_STENCIL_OP_ZERO,
+                              VK_COMPARE_OP_EQUAL,17,23,31};
+        dormant.BackStencil=dormant.FrontStencil;
+        dormant.LogicOp=VK_LOGIC_OP_XOR;
+        dormant.Colors[0].srcColorBlendFactor=VK_BLEND_FACTOR_DST_ALPHA;
+        dormant.Colors[0].dstColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
+        dormant.Colors[0].colorBlendOp=VK_BLEND_OP_REVERSE_SUBTRACT;
+        dormant.Colors[0].srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
+        dormant.Colors[0].dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
+        dormant.Colors[0].alphaBlendOp=VK_BLEND_OP_MAX;
+        Check(dormantKey==BuildPicaPipelineIdentity(program,draw,dormant,true),
+              "dormant register values introduced pipeline variants");
+        dormant.DepthWrite=true;
+        Check(dormantKey!=BuildPicaPipelineIdentity(program,draw,dormant,true),
+              "depth write was incorrectly discarded with depth comparison");
+        auto unused=state;unused.Colors.back().colorWriteMask=7;
+        Check(key==BuildPicaPipelineIdentity(program,draw,unused,true),"inactive attachment introduced a variant");
+        auto mrt=state;mrt.ColorAttachmentCount=2;
+        const auto mrtKey=BuildPicaPipelineIdentity(program,draw,mrt,true);
+        mrt.Colors[1].colorWriteMask=7;
+        Check(mrtKey!=BuildPicaPipelineIdentity(program,draw,mrt,true),"auxiliary output write mask omitted");
+        mrt=state;mrt.ColorAttachmentCount=2;mrt.ColorFormats[1]=VK_FORMAT_R16G16B16A16_SFLOAT;
+        Check(mrtKey!=BuildPicaPipelineIdentity(program,draw,mrt,true),"auxiliary output format omitted");
+        Check(key!=BuildPicaPipelineIdentity(p,draw,state,true),"NRI descriptor contract omitted");
+        Check(key!=BuildPicaPipelineIdentity(program,draw,state,false),"render-pass mode omitted");
+        bindings[0].ByteStride=32;
+        Check(key!=BuildPicaPipelineIdentity(program,draw,state,true),"vertex layout omitted");
+        bindings[0].ByteStride=16;attributes[0].ByteOffset=4;
+        Check(key!=BuildPicaPipelineIdentity(program,draw,state,true),"vertex attribute offset omitted");
+        p=program;p.Vertex[2]=0;bool rejected=false;
+        try{(void)BuildPicaPipelineIdentity(p,draw,state,true);}catch(const std::invalid_argument&){rejected=true;}
+        Check(rejected,"missing program identity accepted");
+        NriPicaPipelineIdentity nriIdentity;
+        std::array<uint32_t, 3> vertex{1,2,3}, fragment{4,5,6};
+        std::array<VkVertexInputBindingDescription, 1> normalizedBindings{{{0,16,VK_VERTEX_INPUT_RATE_VERTEX}}};
+        std::array<VkVertexInputAttributeDescription, 1> normalizedAttributes{{{0,0,VK_FORMAT_R32G32B32A32_SFLOAT,0}}};
+        state.VertexSpirv=vertex;state.FragmentSpirv=fragment;
+        state.VertexBindings=normalizedBindings;state.VertexAttributes=normalizedAttributes;
+        const auto nriKey=nriIdentity.Build(state);
+        auto copiedVertex=vertex;
+        state.VertexSpirv=copiedVertex;
+        Check(nriKey==nriIdentity.Build(state),"identical shader bytes at another address create a pipeline");
+        Check(nriIdentity.ProgramCount()==2,"programs copied per pipeline alias");
+        state.FrontStencil.reference=123;state.BackStencil.reference=42;
+        Check(nriKey==nriIdentity.Build(state),"dynamic NRI stencil reference creates a pipeline");
+        const auto nriChanged=[&](auto mutate){auto s=state;mutate(s);
+            Check(nriKey!=nriIdentity.Build(s),"active NRI state omitted");};
+        nriChanged([](auto& s){s.CullMode=VK_CULL_MODE_BACK_BIT;});
+        nriChanged([](auto& s){s.Colors[0].colorWriteMask=3;});
+        nriChanged([](auto& s){s.DepthWrite=true;});
+        nriChanged([](auto& s){s.FrontStencil.writeMask=12;});
+        normalizedBindings[0].stride=32;
+        Check(nriKey!=nriIdentity.Build(state),"normalized stride ignored");
+        normalizedBindings[0].stride=16;
+        normalizedAttributes[0].format=VK_FORMAT_R32G32_SFLOAT;
+        Check(nriKey!=nriIdentity.Build(state),"normalized format ignored");
+        normalizedAttributes[0].format=VK_FORMAT_R32G32B32A32_SFLOAT;
+        copiedVertex[1]=99;
+        Check(nriKey!=nriIdentity.Build(state),"same-size different vertex program aliased");
+        copiedVertex=vertex;fragment[1]=99;
+        Check(nriKey!=nriIdentity.Build(state),"same-size different fragment program aliased");
+        nriIdentity.Clear();Check(nriIdentity.ProgramCount()==0,"device identity survives reset");
+        std::cout<<"1024 material identities share a key; "<<changes<<" GPU state mutations, program and layout changes stay distinct\n";
+        return 0;
+    }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+}

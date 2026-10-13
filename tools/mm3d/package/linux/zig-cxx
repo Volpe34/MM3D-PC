@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# clang++ command line -> zig c++ (self-contained clang with glibc stubs).
+# The title module shares C++ objects with the runtime, so it uses the runtime's
+# C++ library: libstdc++ 14 headers and libraries from the Steam Runtime 4 SDK
+# (TRIAEVUM_CXX_KIT), never zig's libc++. Baseline x86-64 CPU, glibc 2.38, no
+# debug info, like the clang builds.
+here="$(dirname -- "$(readlink -f -- "$0")")"
+zig="${TRIAEVUM_ZIG:-$here/zig}"
+kit="${TRIAEVUM_CXX_KIT:-$here/cxx}"
+args=(-nostdinc++ "-I$kit/include/c++/14" "-I$kit/include/x86_64-linux-gnu/c++/14")
+for a in "$@"; do
+  case "$a" in
+    --driver-mode=*|-fuse-ld=*|-static-libstdc++|-static-libgcc|-Wl,--thinlto-jobs=*|-Wl,--icf=*|-Wl,--exclude-libs,*) ;;
+    --target=*) args+=(-target x86_64-linux-gnu.2.38 -mcpu=x86_64 -g0) ;;
+    -shared) args+=(-shared -nostdlib++ "$kit/lib/libstdc++.so.6" "$kit/lib/libgcc_s.so.1") ;;
+    *) args+=("$a") ;;
+  esac
+done
+exec "$zig" c++ "${args[@]}"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+zig="${TRIAEVUM_ZIG:-$(dirname -- "$(readlink -f -- "$0")")/zig}"
+exec "$zig" ar "$@"
