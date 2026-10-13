@@ -331,6 +331,7 @@ def main() -> int:
     parser.add_argument("--cxx", type=Path, required=True)
     parser.add_argument("--ar", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=default_jobs())
+    parser.add_argument("--no-shader-tour", action="store_true")
     parser.add_argument("--target", choices=("mingw", "linux"),
                         default="mingw" if sys.platform == "win32" else "linux")
     args = parser.parse_args()
@@ -408,7 +409,13 @@ def main() -> int:
             shutil.copy2(default, install / "data/config" / name)
     (install / "setup_done.json").write_text(json.dumps(
         {"version": version, "module": target.name, "seconds": round(time.time() - started)}, indent=1))
-    step(f"Done in {round((time.time() - started) / 60)} minutes. Start the game with Play.")
+    step(f"Game ready in {round((time.time() - started) / 60)} minutes.")
+    if not args.no_shader_tour:
+        step("Shader tour: Link visits every area once so they never stutter the first time "
+             "(game windows open and close by themselves; closing this window skips it, the game "
+             "works anyway; run BuildShaders later to finish it)")
+        subprocess.run([sys.executable, str(HERE / "shader_tour.py"), "--install", str(install)])
+    step("Done. Start the game with Play.")
     return 0
 
 

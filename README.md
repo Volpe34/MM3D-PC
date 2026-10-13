@@ -67,6 +67,16 @@ pull requests are welcome.
    desktop distribution has. It takes 10–40 minutes once.
 3. Play with `./Play.sh`.
 
+## Shader tour (no stutter on first visits)
+
+At the end of setup, Link visits every scene once, then Deku, Goron, Zora and
+Fierce Deity Link visit the main areas while walking, rolling and attacking.
+This records every shader the game needs, and `Play` builds them before the
+game opens. Game windows open and close by themselves (15–40 minutes). You can
+close it and finish later with `BuildShaders.bat` / `./BuildShaders.sh`; the game
+works either way, it may just stutter briefly the first time it shows something
+new.
+
 ## Button prompts and texture packs
 
 - **Button prompts**: setup downloads HardDanX's Omni UI (Xbox, DualShock,

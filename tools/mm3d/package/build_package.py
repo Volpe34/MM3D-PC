@@ -82,7 +82,7 @@ def main() -> int:
         # Wine runs with missing imports; Windows does not start. Check them all.
         subprocess.run(["python3", HERE / "check_pe_imports.py", out, deps / "llvm-mingw/bin/llvm-objdump"],
                        check=True)
-        for name in ("Setup.bat", "Play.bat"):
+        for name in ("Setup.bat", "Play.bat", "BuildShaders.bat"):
             shutil.copy2(HERE / "windows" / name, out / name)
         (out / "setup").mkdir()
         shutil.copy2(HERE / "windows_setup/setup.ps1", out / "setup/setup.ps1")
@@ -101,7 +101,7 @@ def main() -> int:
         for name in ("libSDL3.so.0", "libdecor-0.so.0", "libfribidi.so.0", "libXss.so.1", "libXtst.so.6",
                      "libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1"):
             shutil.copy2((args.sdk / "usr/lib/x86_64-linux-gnu" / name).resolve(), out / "lib" / name)
-        for name in ("Setup.sh", "Play.sh"):
+        for name in ("Setup.sh", "Play.sh", "BuildShaders.sh"):
             shutil.copy2(HERE / "linux" / name, out / name)
         (out / "setup").mkdir()
         for name in ("linux_setup.py", "zig-cxx", "zig-ar", "ld.lld"):
@@ -137,7 +137,7 @@ def main() -> int:
               lambda p: p.suffix in HEADER_SUFFIXES or p.name == "triaevum_title_whole_aot_plugin.cpp")
     package = tree / "tools/mm3d/package"
     package.mkdir(parents=True, exist_ok=True)
-    for name in ("mm3d_setup.py", "prepare_shaders.py", "merge_pipelines.py"):
+    for name in ("mm3d_setup.py", "prepare_shaders.py", "merge_pipelines.py", "shader_tour.py"):
         shutil.copy2(HERE / name, package / name)
     shutil.copytree(HERE / "recipe", package / "recipe")
     (package / "lib").mkdir()
@@ -155,7 +155,7 @@ def main() -> int:
     (out / "package.json").write_text(json.dumps({"platform": args.platform}, indent=1))
     if windows:
         # cmd.exe mis-parses some LF-only batch files.
-        for path in (out / "Setup.bat", out / "Play.bat", out / "setup/setup.ps1", out / "README.txt"):
+        for path in (out / "Setup.bat", out / "Play.bat", out / "BuildShaders.bat", out / "setup/setup.ps1", out / "README.txt"):
             text = path.read_bytes().replace(b"\r\n", b"\n")
             path.write_bytes(text.replace(b"\n", b"\r\n"))
     print("package:", out)

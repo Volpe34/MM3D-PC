@@ -22,6 +22,12 @@ Setup (once)
   3. Run Setup.bat (Linux: ./Setup.sh) and wait: it takes 10-40 minutes.
      The log is written to logs\setup.log.
 
+Shader tour
+  At the end of Setup, game windows open and close by themselves for 15-40
+  minutes: Link (and his other forms) visits every area so it never stutters
+  the first time. You can close it and run BuildShaders.bat (Linux:
+  ./BuildShaders.sh) later.
+
 Play
   Run Play.bat (Linux: ./Play.sh). F1 = settings (graphics, controls, button
   prompts), F11 = fullscreen. Saves are in data\savedata.
