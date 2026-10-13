@@ -2,7 +2,7 @@
 import json, csv
 from pathlib import Path
 import os
-W = Path(os.environ.get("MM3D_WORK", Path.home() / "mm3d_pc/work/mm3d"))
+W = Path(os.environ["MM3D_WORK"])  # the translation work folder (set by mm3d_setup.py)
 m = json.load(open(W / "thumb_map.json"))
 ranges = []
 for f in m["thumb_functions"]:

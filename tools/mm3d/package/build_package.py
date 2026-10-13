@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -20,6 +21,8 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 TOOL_TREES = ("tools/mm3d", "tools/triaevum_release", "tools/oot3d/native_a32_runtime")
 HEADER_SUFFIXES = {".h", ".hpp", ".inl", ".inc"}
+# Developer tools of tools/mm3d that setup never runs.
+DEVELOPER_ONLY = re.compile(r"^(test_.*\.py|.*\.sh)$")
 
 
 def copy_tree(source: Path, target: Path, keep) -> None:
@@ -131,7 +134,8 @@ def main() -> int:
     tree = out / "setup/TriAevum"
     for relative in TOOL_TREES:
         copy_tree(REPO / relative, tree / relative,
-                  lambda p: p.suffix not in (".pyc",) and "package" not in p.relative_to(REPO).parts[2:3])
+                  lambda p: p.suffix not in (".pyc",) and "package" not in p.relative_to(REPO).parts[2:3]
+                  and not (relative == "tools/mm3d" and (DEVELOPER_ONLY.match(p.name) or "ghidra_scripts" in p.parts)))
     shutil.copy2(REPO / "tools/oot3d/operational_inputs.json", tree / "tools/oot3d/operational_inputs.json")
     copy_tree(REPO / "tools/oot3d/native_game_runtime", tree / "tools/oot3d/native_game_runtime",
               lambda p: p.suffix in HEADER_SUFFIXES or p.name == "triaevum_title_whole_aot_plugin.cpp")
@@ -152,6 +156,13 @@ def main() -> int:
         if source.exists():
             shutil.copy2(source, package / "defaults" / name)
     shutil.copy2(HERE / "README.txt", out / "README.txt")
+    # Licenses: TriAevum's, the notices, and each bundled library's.
+    import package_licenses
+    package_licenses.common(out, REPO, args.platform)
+    if windows:
+        package_licenses.windows(out, Path.home() / "mm3d_pc/deps")
+    else:
+        package_licenses.linux(out, args.sdk)
     (out / "package.json").write_text(json.dumps({"platform": args.platform}, indent=1))
     if windows:
         # cmd.exe mis-parses some LF-only batch files.
