@@ -1,3 +1,5 @@
+#include <vector>
+#include <algorithm>
 #include "fast/Fast3dGui.h"
 
 #include "fast/Fast3dWindow.h"
@@ -326,8 +328,25 @@ void Fast3dGui::DrawMenu() {
         const bool toggleKeyDown =
             window != nullptr &&
             window->IsKeyDown(Ship::KbScancode::LUS_KB_F1);
-        if (settingsWindow != nullptr && toggleKeyDown &&
-            !mOot3dGraphicsToggleKeyWasDown) {
+        // TRIAEVUM_MENU_TOGGLE_FRAMES=a,b,...: toggles the settings at those
+        // host frames (tests of the open/close path).
+        static const std::vector<uint64_t> toggleFrames = [] {
+            std::vector<uint64_t> frames;
+            if (const char* list = std::getenv("TRIAEVUM_MENU_TOGGLE_FRAMES")) {
+                for (const char* cursor = list; *cursor != '\0';) {
+                    char* end = nullptr;
+                    frames.push_back(std::strtoull(cursor, &end, 10));
+                    cursor = *end == ',' ? end + 1 : end;
+                    if (end == cursor && *end != '\0') break;
+                }
+            }
+            return frames;
+        }();
+        static uint64_t menuFrame = 0;
+        const bool scriptedToggle =
+            std::find(toggleFrames.begin(), toggleFrames.end(), ++menuFrame) != toggleFrames.end();
+        if (settingsWindow != nullptr &&
+            ((toggleKeyDown && !mOot3dGraphicsToggleKeyWasDown) || scriptedToggle)) {
             settingsWindow->ToggleVisibility();
         }
         mOot3dGraphicsToggleKeyWasDown = toggleKeyDown;

@@ -411,9 +411,9 @@ def main() -> int:
         {"version": version, "module": target.name, "seconds": round(time.time() - started)}, indent=1))
     step(f"Game ready in {round((time.time() - started) / 60)} minutes.")
     if not args.no_shader_tour:
-        step("Shader tour: Link visits every area once so they never stutter the first time "
-             "(game windows open and close by themselves; closing this window skips it, the game "
-             "works anyway; run BuildShaders later to finish it)")
+        step("Shader tour: Link visits every area once so they never stutter the first time.\n"
+             "  The game opens and closes by itself many times: THIS IS NORMAL, it is not a bug.\n"
+             "  Closing this window skips it (the game works anyway; run BuildShaders later to finish it).")
         subprocess.run([sys.executable, str(HERE / "shader_tour.py"), "--install", str(install)])
     step("Done. Start the game with Play.")
     return 0

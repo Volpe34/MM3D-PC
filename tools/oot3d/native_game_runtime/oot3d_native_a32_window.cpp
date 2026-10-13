@@ -1883,10 +1883,80 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
   return handled;
 }
 
+// MM3D: Tatl's "wants to talk" alert sits in the upper screen's top left,
+// under the hearts and magic placed there: it is moved down below the
+// minimap (layout units, y down; TRIAEVUM_TATL_ALERT_Y, 0 leaves it). v1.1's
+// CommonLayouts (0x6B7B8C) has the play HUD at +0x10, its "chat_alart" pane
+// widget at +0x170; a widget's name is at +0x10, its position at +0x3C
+// (translate x, y, z; flags at +0x48 of it).
+void MoveMm3dTatlAlert(oot3d::recomp::a32::MemoryBus &memory) {
+  static const float offset = [] {
+    const char *value = std::getenv("TRIAEVUM_TATL_ALERT_Y");
+    return value != nullptr ? std::strtof(value, nullptr) : 125.0F;
+  }();
+  static uint32_t checkedWidget = 0;
+  static bool isAlert = false;
+  static uint32_t originalBits = 0, writtenBits = 0;
+  uint32_t hud = 0, widget = 0, bits = 0, flags = 0, active = 0;
+  if (offset == 0.0F || !memory.Read32(0x006B7B8CU + 0x10U, &hud) || hud == 0U ||
+      !memory.Read32(hud + 0x170U, &widget) || widget == 0U) {
+    return;
+  }
+  if (widget != checkedWidget) {
+    checkedWidget = widget;
+    uint32_t name = 0;
+    char text[11] = {};
+    isAlert = memory.Read32(widget + 0x10U, &name);
+    for (uint32_t index = 0; isAlert && index < 10U; ++index) {
+      uint8_t c = 0;
+      isAlert = memory.Read8(name + index, &c);
+      text[index] = static_cast<char>(c);
+    }
+    isAlert = isAlert && std::string_view(text, 10) == "chat_alart";
+    if (!memory.Read32(widget + 0x40U, &originalBits)) isAlert = false;
+    writtenBits = originalBits;
+  }
+  if (!isAlert || !memory.Read32(widget + 0x40U, &bits)) {
+    return;
+  }
+  // TRIAEVUM_FORCE_TATL_STATE=<n> (tests): the HUD's Tatl state byte (+0x19D,
+  // 4 hidden).
+  if (const char *forced = std::getenv("TRIAEVUM_FORCE_TATL_STATE")) {
+    memory.Write8(hud + 0x19DU, static_cast<uint8_t>(std::strtoul(forced, nullptr, 0)));
+  }
+  static const bool debug = std::getenv("TRIAEVUM_TATL_DEBUG") != nullptr;
+  static uint32_t debugCalls = 0;
+  if (debug && ++debugCalls % 60U == 0U) {
+    uint32_t x = 0, f = 0, state = 0;
+    memory.Read32(widget + 0x3CU, &x);
+    memory.Read32(widget + 0x84U, &f);
+    memory.Read32(hud + 0x19CU, &state);
+    std::fprintf(stderr, "TATL widget=%08x pos=%.1f,%.1f flags=%08x state=%08x\n", widget,
+                 std::bit_cast<float>(x), std::bit_cast<float>(bits), f, state);
+  }
+  // The game set its own position (its animation): offset from that one.
+  if (bits != writtenBits) originalBits = bits;
+  const float y = std::bit_cast<float>(originalBits) + offset;
+  writtenBits = std::bit_cast<uint32_t>(y);
+  if (writtenBits == bits || !memory.Read32(widget + 0x84U, &flags) || !memory.Read32(widget + 0x88U, &active)) {
+    return;
+  }
+  memory.Write32(widget + 0x40U, writtenBits);
+  memory.Write32(widget + 0x84U, flags | 0x200U);  // translate Y set
+  memory.Write32(widget + 0x88U, y == 0.0F ? active | 0x200U : active & ~0x200U);
+}
+
 void ApplyNativeWidescreenProjectionPolicy(
     uint32_t pc, oot3d::recomp::a32::GuestState &state,
     oot3d::recomp::a32::MemoryBus &memory, void *user) {
   auto &runtime = *static_cast<NativeWidescreenProjectionState *>(user);
+  // TRIAEVUM_FORCE_TATL=<message id> (MM3D tests): Tatl wants to talk
+  // (Player_Update, Player+0x11DCC is Tatl's message).
+  static const uint16_t forcedTatl = [] {
+    const char *value = std::getenv("TRIAEVUM_FORCE_TATL");
+    return value != nullptr ? static_cast<uint16_t>(std::strtoul(value, nullptr, 0)) : uint16_t{0};
+  }();
+  if (forcedTatl != 0U && pc == 0x001F9E80U) memory.Write16(state.r[0] + 0x11DCCU, forcedTatl);
   if (pc == Oot3dNativeGame::kNativeQbfA4Blit && runtime.HdFonts && runtime.TraceMemory)
     runtime.HdFonts->ObserveBlit(state, *runtime.TraceMemory);
   if (runtime.TopScreenUiProfile &&
@@ -2579,6 +2649,7 @@ void ApplyNativeWidescreenProjectionPolicy(
   }
   if (pc != 0U && pc == runtime.LayoutPassPc && runtime.TraceMemory != nullptr) {
     runtime.LowerLayoutNames = ReadMm3dLayoutQueueNames(*runtime.TraceMemory, state.r[0], 28U);
+    MoveMm3dTatlAlert(*runtime.TraceMemory);
     return;
   }
   if (pc != 0U && pc == runtime.PauseTextureSetupPc && runtime.TraceMemory != nullptr) {
@@ -3708,6 +3779,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       if (!restoration) {
         widescreenProjection.LayoutPassPc = 0x001267E8U;
         blockEntryHooks.push_back(widescreenProjection.LayoutPassPc);
+        if (std::getenv("TRIAEVUM_FORCE_TATL") != nullptr) blockEntryHooks.push_back(0x001F9E80U);
+      }
+      // Each draw carries the model instance that submitted it, so frame
+      // interpolation pairs a model with itself whatever the draw order.
+      if (!restoration && std::getenv("TRIAEVUM_NO_MODEL_IDENTITY") == nullptr) {
+        picaCompositionTracker.EnableMm3dModelInstances();
+        picaFrontend.SetCompositionAddressResolver(&picaCompositionTracker);
+        const auto modelHooks = Oot3dNativeGame::Mm3dNativePicaCompositionHookPcs();
+        blockEntryHooks.insert(blockEntryHooks.end(), modelHooks.begin(), modelHooks.end());
       }
     }
   }
@@ -4332,6 +4412,11 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::optional<Oot3dNativeGame::Oot3dPicaVisualFrame>
       previousVisualFrame;
   bool latestVisualTransitionContinuous = false;
+  // One game frame further back (N-2 -> N-1): the presentation clock may
+  // still show a moment before the previous frame when a new one arrives.
+  Oot3dNativeGame::Oot3dPicaPreparedVisualTransition olderVisualTransition;
+  std::optional<Oot3dNativeGame::Oot3dPicaVisualFrame> olderVisualFrame;
+  bool olderVisualTransitionContinuous = false;
   uint64_t visualContinuityEpoch = 1U;
   std::map<uint32_t, Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission>
       displayTransfersByOutput;
@@ -4492,6 +4577,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           pendingTextureCopyCompletions.clear();
           visualContinuityTracker = {};
           preparedVisualTransition.Reset();
+          olderVisualTransition.Reset();
+          olderVisualFrame.reset();
+          olderVisualTransitionContinuous = false;
           latestVisualFrame.reset();
           previousVisualFrame.reset();
           latestVisualTransitionContinuous = false;
@@ -4519,6 +4607,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         latestVisualTransitionContinuous =
             state.LatestTransitionContinuous;
         preparedVisualTransition.Reset();
+        olderVisualTransition.Reset();
+        olderVisualFrame.reset();
+        olderVisualTransitionContinuous = false;
         visualSampleCadence.Reset();
         if (latestVisualTransitionContinuous &&
             previousVisualFrame.has_value() &&
@@ -4911,7 +5002,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   api.SetPicaPhysicalMemoryAccess(
       [&](uint32_t address, std::span<uint8_t> bytes) { return picaMemoryView.Read(address, bytes); },
       [&](uint64_t completion, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
-        if (!pendingTextureCopyCompletions.contains(completion)) return true;
+        // (A copy already signalled -- into VRAM, which the GPU path could
+        // not take -- still lands in guest memory.)
+        const bool pending = pendingTextureCopyCompletions.contains(completion);
         for (const auto& write : writes) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!address || !process.Memory().IsWritable(*address, write.Bytes.size())) return false;
@@ -4920,6 +5013,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!process.Memory().WriteBytes(*address, write.Bytes)) return false;
         }
+        if (!pending) return true;
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
         pendingTextureCopyCompletions.erase(completion);
         ++completedPpfCount;
@@ -5449,6 +5543,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     pendingTextureCopyCompletions.clear();
     visualContinuityTracker = {};
     preparedVisualTransition.Reset();
+    olderVisualTransition.Reset();
+    olderVisualFrame.reset();
+    olderVisualTransitionContinuous = false;
     latestVisualFrame.reset();
     previousVisualFrame.reset();
     latestVisualTransitionContinuous = false;
@@ -5546,6 +5643,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       }
       if (previousInterpolationEnabled != visualInterpolationEnabled) {
         preparedVisualTransition.Reset();
+        olderVisualTransition.Reset();
+        olderVisualFrame.reset();
+        olderVisualTransitionContinuous = false;
         visualContinuityTracker = {};
         previousVisualFrame.reset();
         latestVisualFrame.reset();
@@ -5604,8 +5704,56 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     const bool arrivalClockAlpha =
         !drawTimeAlphaDisabled && frameCompositionPolicy.InterpolationEnabled() &&
         !frameCompositionPolicy.FixedMultiplier() && frameRateContract.StepSeconds > 0.0;
-    const auto observeVisualFrameArrival = [&] {
+    // A sample shows the moment it reaches the screen, not the moment it is
+    // computed. A game frame runs inside one host frame (that one takes ~14
+    // ms, the next ones catch up in 3-7 ms), yet with vsync the images still
+    // show one per refresh: timed by when they were computed, the motion
+    // jerked 30 times a second (most visible turning the camera). The
+    // presentation clock advances by the mean sample interval each sample,
+    // pulled gently toward real time, and starts again after a real stall.
+    static const bool presentationClockDisabled =
+        std::getenv("TRIAEVUM_NO_PRESENTATION_CLOCK") != nullptr;
+    static std::optional<std::chrono::steady_clock::time_point> presentationClock;
+    static std::optional<std::chrono::steady_clock::time_point> lastPresentationSample;
+    static double presentationInterval = 0.0;
+    static uint64_t presentationClockFrame = ~0ULL;
+    static std::chrono::steady_clock::time_point presentationClockSample{};
+    const auto presentationNow = [&] {
+      if (presentationClockFrame == presentationFrameCount) return presentationClockSample;
+      presentationClockFrame = presentationFrameCount;
+      presentationClockSample = [&] {
       const auto now = hostNow();
+      if (presentationClockDisabled || hostArgs.FixedDeltaSeconds > 0.0) {
+        return now;
+      }
+      if (lastPresentationSample.has_value()) {
+        const double gap = std::chrono::duration<double>(now - *lastPresentationSample).count();
+        if (gap > 0.0 && gap < 0.05) {
+          presentationInterval = presentationInterval > 0.0
+                                     ? presentationInterval * 0.97 + gap * 0.03
+                                     : gap;
+        }
+      }
+      lastPresentationSample = now;
+      if (!presentationClock.has_value() || presentationInterval <= 0.0) {
+        presentationClock = now;
+        return now;
+      }
+      const auto predicted =
+          *presentationClock + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                   std::chrono::duration<double>(presentationInterval));
+      const double error = std::chrono::duration<double>(now - predicted).count();
+      presentationClock =
+          std::abs(error) > 0.025
+              ? now
+              : predicted + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                std::chrono::duration<double>(error * 0.05));
+      return *presentationClock;
+      }();
+      return presentationClockSample;
+    };
+    const auto observeVisualFrameArrival = [&] {
+      const auto now = presentationNow();
       const auto step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(frameRateContract.StepSeconds));
       if (!visualFrameClock.has_value()) {
@@ -5624,9 +5772,14 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       if (!arrivalClockAlpha || !visualFrameClock.has_value()) {
         return visualInterpolationAlpha;
       }
+      // One sample interval later than the newest frame's arrival: a frame
+      // is noticed at the first sample after it is ready, and the older
+      // pair covers the moments before the previous frame (alpha below 0).
+      const double margin =
+          presentationClockDisabled || hostArgs.FixedDeltaSeconds > 0.0 ? 0.0 : presentationInterval;
       const double since = std::chrono::duration<double>(
-          hostNow() - *visualFrameClock).count();
-      return static_cast<float>(std::clamp(since / frameRateContract.StepSeconds, 0.0, 1.0));
+          presentationNow() - *visualFrameClock).count() - margin;
+      return static_cast<float>(std::clamp(since / frameRateContract.StepSeconds, -1.0, 1.0));
     };
     applyTopScreenConfigSnapshot();
     uiLifecycleBridge.BeginHostFrame(
@@ -6850,6 +7003,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     // snapshot needed if presentation temporarily outruns
                     // simulation.
                     preparedVisualTransition.Reset();
+                    olderVisualTransition.Reset();
+                    olderVisualFrame.reset();
+                    olderVisualTransitionContinuous = false;
                     previousVisualFrame.reset();
                     latestVisualFrame.reset();
                     latestVisualTransitionContinuous = false;
@@ -6857,6 +7013,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     bool resynchronizeVisualNamespace =
                         !latestVisualFrame.has_value();
                     if (latestVisualFrame.has_value()) {
+                      std::swap(olderVisualTransition, preparedVisualTransition);
+                      olderVisualTransitionContinuous =
+                          latestVisualTransitionContinuous && previousVisualFrame.has_value() &&
+                          olderVisualTransition.Ready();
                       const bool transitionPrepared =
                           preparedVisualTransition.Prepare(
                               *latestVisualFrame, *currentVisualFrame,
@@ -6870,13 +7030,19 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                         observeVisualFrameArrival();
                         sampleAlpha = drawTimeInterpolationAlpha();
                       }
-                      traceSample(currentVisualFrame->Sequence, sampleAlpha);
+                      // Still before the previous frame: the older pair.
+                      const bool olderSample = sampleAlpha < 0.0F && olderVisualTransitionContinuous;
+                      sampleAlpha = olderSample ? sampleAlpha + 1.0F : std::max(sampleAlpha, 0.0F);
+                      traceSample(currentVisualFrame->Sequence - (olderSample ? 1U : 0U), sampleAlpha);
                       const bool visualSampleReady =
-                          transitionPrepared &&
-                          preparedVisualTransition.Sample(
-                              *latestVisualFrame, *currentVisualFrame,
-                              sampleAlpha, sample,
-                              &visualInterpolationTiming);
+                          olderSample
+                              ? olderVisualTransition.Sample(*previousVisualFrame, *latestVisualFrame,
+                                                             sampleAlpha, sample, &visualInterpolationTiming)
+                              : transitionPrepared &&
+                                    preparedVisualTransition.Sample(
+                                        *latestVisualFrame, *currentVisualFrame,
+                                        sampleAlpha, sample,
+                                        &visualInterpolationTiming);
                       ++visualTransitionCount;
                       visualMatchedDrawCount += transition.MatchedDraws;
                       visualStrictUniqueMatchedDrawCount +=
@@ -6965,8 +7131,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                 frameCompositionPolicy,
                                 Fast::Oot3d::NativeFrameTemporalSampleKind::
                                     Transition,
-                                latestVisualFrame->Sequence,
-                                currentVisualFrame->Sequence,
+                                olderSample ? previousVisualFrame->Sequence : latestVisualFrame->Sequence,
+                                olderSample ? latestVisualFrame->Sequence : currentVisualFrame->Sequence,
                                 visualContinuityEpoch, sampleAlpha,
                                 static_cast<float>(
                                     presentationElapsedSeconds));
@@ -6993,6 +7159,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                         Oot3dNativeGame::ViewOot3dPicaVisualFrame(
                             *currentVisualFrame, sample)) {
                       preparedVisualTransition.Reset();
+                      olderVisualTransition.Reset();
+                      olderVisualFrame.reset();
+                      olderVisualTransitionContinuous = false;
                       ++visualContinuityEpoch;
                       const auto temporalSample =
                           Fast::Oot3d::BuildNativeFrameTemporalSample(
@@ -7015,6 +7184,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       presentedVisualSample = true;
                     }
                     if (latestVisualFrame.has_value()) {
+                      olderVisualFrame = std::move(previousVisualFrame);
                       previousVisualFrame = std::move(latestVisualFrame);
                     } else {
                       latestVisualTransitionContinuous = false;
@@ -7030,20 +7200,25 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                   latestVisualFrame.has_value() &&
                   preparedVisualTransition.Ready()) {
                 auto &sample = visualFrameSampleScratch;
+                const float clockAlpha = drawTimeInterpolationAlpha();
+                const bool olderSample = arrivalClockAlpha && clockAlpha < 0.0F &&
+                                         olderVisualTransitionContinuous && olderVisualFrame.has_value();
                 const float sampleAlpha =
-                    visualSampleCadence.Resolve(
-                        false, drawTimeInterpolationAlpha());
-                traceSample(latestVisualFrame->Sequence, sampleAlpha);
-                if (preparedVisualTransition.Sample(
-                        *previousVisualFrame, *latestVisualFrame, sampleAlpha,
-                        sample, &visualInterpolationTiming)) {
+                    olderSample ? clockAlpha + 1.0F : visualSampleCadence.Resolve(false, clockAlpha);
+                traceSample(latestVisualFrame->Sequence - (olderSample ? 1U : 0U), sampleAlpha);
+                if (olderSample
+                        ? olderVisualTransition.Sample(*olderVisualFrame, *previousVisualFrame, sampleAlpha,
+                                                       sample, &visualInterpolationTiming)
+                        : preparedVisualTransition.Sample(
+                              *previousVisualFrame, *latestVisualFrame, sampleAlpha,
+                              sample, &visualInterpolationTiming)) {
                   const auto temporalSample =
                       Fast::Oot3d::BuildNativeFrameTemporalSample(
                           frameCompositionPolicy,
                           Fast::Oot3d::NativeFrameTemporalSampleKind::
                               Transition,
-                          previousVisualFrame->Sequence,
-                          latestVisualFrame->Sequence,
+                          olderSample ? olderVisualFrame->Sequence : previousVisualFrame->Sequence,
+                          olderSample ? previousVisualFrame->Sequence : latestVisualFrame->Sequence,
                           visualContinuityEpoch, sampleAlpha,
                           static_cast<float>(presentationElapsedSeconds));
                   executeVisualSample(
@@ -7768,10 +7943,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                static_cast<unsigned long long>(transfer.AfterDrawSubmissionId), selectedForTop ? 1 : 0);
                 }
                 picaPresentationScheduler.Capture(transfer);
-                if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes != 0U) {
+                // A texture copy into VRAM stays on the GPU (a texture the
+                // title samples): done as far as the guest is concerned, like a
+                // display transfer, without flushing the frame's GPU work.
+                static const bool cpuTextureCopies = std::getenv("TRIAEVUM_CPU_TEXTURE_COPIES") != nullptr;
+                const bool gpuTextureCopy =
+                    !cpuTextureCopies && transfer.Transfer.TextureCopyBytes != 0U &&
+                    transfer.OutputPhysicalAddress >= 0x18000000U && transfer.OutputPhysicalAddress < 0x18600000U;
+                if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes != 0U && !gpuTextureCopy) {
                   pendingTextureCopyCompletions.insert(transfer.CompletionId);
                 }
-                if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes == 0U) {
+                if (transfer.SignalInterrupt && (transfer.Transfer.TextureCopyBytes == 0U || gpuTextureCopy)) {
                   if (!hostServices.SignalPicaInterrupt(
                           process.Memory(),
                           Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) {

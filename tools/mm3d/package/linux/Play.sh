@@ -8,6 +8,7 @@ mkdir -p logs data/shader_corpus/runs
 [[ -f logs/last_run.log ]] && mv -f logs/last_run.log logs/previous_run.log
 export TRIAEVUM_LOG_FILE="$PWD/logs/last_run.log" TRIAEVUM_CRASH_DIR="$PWD/logs" TRIAEVUM_REPORT_TITLE=MM3D
 # Bundled libstdc++ only when it is newer than the system one (GPU drivers may need the newer).
+PATH="$PATH:/sbin:/usr/sbin"  # ldconfig
 newest() { grep -ao 'GLIBCXX_3\.4\.[0-9]*' "$1" 2>/dev/null | sort -uV | tail -1; }
 system_cxx="$(ldconfig -p 2>/dev/null | awk '/libstdc\+\+\.so\.6 .*x86-64/ {print $NF; exit}')"
 libs="$PWD/lib"
@@ -15,6 +16,15 @@ if [[ -f lib/compat/libstdc++.so.6 ]]; then
   ours="$(newest lib/compat/libstdc++.so.6)"; theirs="$(newest "$system_cxx")"
   if [[ -z "$theirs" || "$(printf '%s\n%s\n' "$ours" "$theirs" | sort -V | tail -1)" != "$theirs" ]]; then
     libs="$libs:$PWD/lib/compat"
+  fi
+fi
+# Bundled libwayland only when the system has none or an older one (the system's
+# GPU driver may need its own newer libwayland).
+if [[ -f lib/wayland/VERSION ]]; then
+  system_wayland="$(readlink -f "$(ldconfig -p 2>/dev/null | awk '/libwayland-client\.so\.0 .*x86-64/ {print $NF; exit}')" 2>/dev/null)"
+  theirs="${system_wayland##*libwayland-client.so.}"; ours="$(cat lib/wayland/VERSION)"
+  if [[ -z "$system_wayland" || ! -f "$system_wayland" || "$(printf '%s\n%s\n' "$ours" "$theirs" | sort -V | tail -1)" != "$theirs" ]]; then
+    libs="$libs:$PWD/lib/wayland"
   fi
 fi
 export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

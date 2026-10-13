@@ -210,6 +210,86 @@ std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept {
     return kCompositionHookPcs;
 }
 
+std::span<const uint32_t> Mm3dNativePicaCompositionHookPcs() noexcept {
+    static constexpr std::array kHooks{kMm3dModelDrawEntry, kMm3dModelDrawReturn};
+    return kHooks;
+}
+
+void Oot3dNativePicaCompositionTracker::ObserveMm3dBlockEntry(
+    uint32_t pc, const oot3d::recomp::a32::GuestState& state,
+    oot3d::recomp::a32::MemoryBus& memory) {
+    if (pc == kMm3dModelDrawEntry) {
+        ++mStats.ModelDrawEntries;
+        mActiveModelDraw.reset();
+        uint32_t cursor = 0U;
+        if (state.r[14] != kMm3dModelDrawReturn ||
+            !memory.Read32(kMm3dCommandListCursorAddress, &cursor)) {
+            ++mStats.ReadFailures;
+            return;
+        }
+        // A list started over (another buffer, or the cursor went back):
+        // ranges recorded in that buffer by earlier frames are stale.
+        uint32_t list = 0U;
+        uint32_t base = 0U;
+        if (memory.Read32(kMm3dGraphicsContextAddress + 0x9CU, &list) &&
+            memory.Read32(list + 4U, &base) &&
+            (base != mModelListBase || cursor < mModelListCursor)) {
+            mModelSpans.erase(mModelSpans.lower_bound(base),
+                              mModelSpans.lower_bound(cursor));
+            mModelListBase = base;
+            mModelListSerials[base] = ++mModelListSerial;
+            if (mModelListSerials.size() > 64U) mModelListSerials.clear();
+        }
+        mModelListCursor = cursor;
+        mActiveModelDraw = ActiveModelDraw{state.r[0], cursor};
+        return;
+    }
+    if (pc != kMm3dModelDrawReturn || !mActiveModelDraw.has_value()) {
+        return;
+    }
+    const auto draw = *mActiveModelDraw;
+    mActiveModelDraw.reset();
+    uint32_t end = 0U;
+    if (!memory.Read32(kMm3dCommandListCursorAddress, &end)) {
+        ++mStats.ReadFailures;
+        return;
+    }
+    // A full list continues in another buffer: the range is not contiguous.
+    if (end <= draw.BeginAddress || end - draw.BeginAddress > 0x100000U) {
+        if (end != draw.BeginAddress) ++mStats.InvalidModelSpans;
+        return;
+    }
+    auto it = mModelSpans.lower_bound(draw.BeginAddress);
+    if (it != mModelSpans.begin() &&
+        std::prev(it)->second.EndAddress > draw.BeginAddress) {
+        --it;
+    }
+    while (it != mModelSpans.end() && it->first < end) {
+        it = mModelSpans.erase(it);
+    }
+    if (mModelSpans.size() >= MaximumModelSpans) mModelSpans.clear();
+    mModelSpans.emplace(draw.BeginAddress,
+                        ModelSpan{end, draw.Model, mModelListBase, mModelListSerial});
+    ++mStats.ModelSpans;
+}
+
+bool Oot3dNativePicaCompositionTracker::ResolveCommandAddress(
+    uint32_t address, Oot3dPicaCompositionAttribution& attribution) const {
+    auto it = mModelSpans.upper_bound(address);
+    if (it == mModelSpans.begin()) return false;
+    --it;
+    if (address >= it->second.EndAddress) return false;
+    const auto serial = mModelListSerials.find(it->second.ListBase);
+    if (serial == mModelListSerials.end() ||
+        serial->second != it->second.ListSerial) {
+        return false;
+    }
+    attribution = {Oot3dPicaCompositionLayer::Unknown,
+                   Oot3dPicaCompositionProvenance::NativeModelInstance,
+                   kMm3dModelDrawEntry, it->second.Model};
+    return true;
+}
+
 bool Oot3dNativePicaCompositionTracker::RecordPendingSpan(
     Oot3dPicaCommandListCompositionSpan span) {
     // Reject a crossing owner before erasing nested spans. Otherwise an invalid
@@ -262,6 +342,10 @@ bool Oot3dNativePicaCompositionTracker::RecordPendingSpan(
 void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
     uint32_t pc, const oot3d::recomp::a32::GuestState& state,
     oot3d::recomp::a32::MemoryBus& memory) {
+    if (mMm3dModelInstances) {
+        ObserveMm3dBlockEntry(pc, state, memory);
+        return;
+    }
     const auto ui = std::find(kUiViews.begin(), kUiViews.end(), std::pair{pc, state.r[14]});
     if (ui != kUiViews.end() && !mActiveUiScope) {
         ActiveAtmosphereScope scope{};
@@ -555,6 +639,11 @@ void Oot3dNativePicaCompositionTracker::Reset() noexcept {
     mActiveAtmosphereScope.reset();
     mActivePrimitivePacket.reset();
     mPendingSpans.clear();
+    mActiveModelDraw.reset();
+    mModelSpans.clear();
+    mModelListBase = 0U;
+    mModelListCursor = 0U;
+    mModelListSerials.clear();
     mStats = {};
 }
 

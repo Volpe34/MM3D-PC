@@ -24,6 +24,19 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace Oot3d::Renderer {
 namespace {
@@ -592,7 +605,14 @@ class AzaharTexturePackRuntime::Impl {
         const unsigned cores = std::max(1U, std::thread::hardware_concurrency());
         const unsigned workers = std::clamp(cores > 2U ? cores - 2U : 1U, 1U, 8U);
         for (unsigned index = 0; index < workers; ++index) {
-            mWorkers.emplace_back([this] { WorkerMain(); });
+            mWorkers.emplace_back([this] { WorkerMain(false); });
+        }
+        // Preloading has threads of its own at the lowest priority: decoding
+        // a 4K pack on half the workers at normal priority stuttered the
+        // game for its first seconds.
+        const unsigned preloaders = std::clamp(cores / 6U, 1U, 4U);
+        for (unsigned index = 0; index < preloaders; ++index) {
+            mWorkers.emplace_back([this] { WorkerMain(true); });
         }
     }
 
@@ -602,6 +622,7 @@ class AzaharTexturePackRuntime::Impl {
             mStopping = true;
         }
         mWorkAvailable.notify_all();
+        mPreloadAvailable.notify_all();
         for (auto& worker : mWorkers) {
             if (worker.joinable()) {
                 worker.join();
@@ -1141,12 +1162,7 @@ class AzaharTexturePackRuntime::Impl {
             mPendingLoadGenerations.insert_or_assign(hash, mGeneration);
             mPreloadJobs.push_back({hash, mGeneration, texture, true});
         }
-        mWorkAvailable.notify_all();
-    }
-
-    // At most half of the workers preload (the game keeps the rest).
-    size_t PreloadWorkerLimit() const {
-        return std::max<size_t>(1U, mWorkers.size() / 2U);
+        mPreloadAvailable.notify_all();
     }
 
     // A texture needed now (a frame waits for it): queued, or a preload of
@@ -1200,39 +1216,49 @@ class AzaharTexturePackRuntime::Impl {
         mLastError = std::move(error);
     }
 
-    void WorkerMain() {
+    static void LowerThreadPriority() {
+#if defined(_WIN32)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+#elif defined(__linux__)
+        setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19);
+#endif
+    }
+
+    void WorkerMain(bool preloader) {
+        if (preloader) {
+            LowerThreadPriority();
+        }
         for (;;) {
             LoadJob loadJob;
             DumpJob job;
             bool load = false;
             {
                 std::unique_lock lock(mMutex);
-                const auto preloadReady = [&] {
-                    return !mPreloadJobs.empty() && mActivePreloads < PreloadWorkerLimit();
-                };
-                mWorkAvailable.wait(lock, [&] {
-                    return mStopping || !mLoadJobs.empty() ||
-                           !mDumpJobs.empty() || preloadReady();
-                });
-                if (mLoadJobs.empty() && mDumpJobs.empty() &&
-                    (mStopping || !preloadReady())) {
+                if (preloader) {
+                    mPreloadAvailable.wait(lock, [&] { return mStopping || !mPreloadJobs.empty(); });
                     if (mStopping) {
                         return;
                     }
-                    continue;
-                }
-                if (!mLoadJobs.empty()) {
-                    load = true;
-                    loadJob = std::move(mLoadJobs.front());
-                    mLoadJobs.pop_front();
-                } else if (!mDumpJobs.empty()) {
-                    job = std::move(mDumpJobs.front());
-                    mDumpJobs.pop_front();
                 } else {
+                    mWorkAvailable.wait(lock, [&] {
+                        return mStopping || !mLoadJobs.empty() || !mDumpJobs.empty();
+                    });
+                    if (mLoadJobs.empty() && mDumpJobs.empty()) {
+                        return;  // stopping
+                    }
+                }
+                if (preloader) {
                     load = true;
                     loadJob = std::move(mPreloadJobs.front());
                     mPreloadJobs.pop_front();
                     ++mActivePreloads;
+                } else if (!mLoadJobs.empty()) {
+                    load = true;
+                    loadJob = std::move(mLoadJobs.front());
+                    mLoadJobs.pop_front();
+                } else {
+                    job = std::move(mDumpJobs.front());
+                    mDumpJobs.pop_front();
                 }
             }
 
@@ -1270,7 +1296,6 @@ class AzaharTexturePackRuntime::Impl {
                     }
                     if (loadJob.Preload) {
                         --mActivePreloads;
-                        mWorkAvailable.notify_one();
                     }
                     if (mDemanded.erase(loadJob.Hash) != 0U && mPendingLoads > 0U) {
                         --mPendingLoads;
@@ -1309,6 +1334,7 @@ class AzaharTexturePackRuntime::Impl {
 
     mutable std::mutex mMutex;
     std::condition_variable mWorkAvailable;
+    std::condition_variable mPreloadAvailable;
     std::condition_variable mIdle;
     std::vector<std::thread> mWorkers;
     bool mStopping = false;

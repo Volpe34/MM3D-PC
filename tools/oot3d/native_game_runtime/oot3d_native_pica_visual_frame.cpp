@@ -483,6 +483,9 @@ uint64_t ComputePipelineDrawIdentity(const Oot3dPicaVulkanDrawPlan& plan) {
     return hash;
 }
 
+// Off while TRIAEVUM_MODEL_PAIR_AUDIT builds the pairing without identities.
+bool gModelPairsSuspended = false;
+
 // The same domain and attribution, or one side unattributed for a frame.
 bool CompatibleComposition(const Oot3dPicaVulkanDrawPlan& previous, const Oot3dPicaVulkanDrawPlan& current) {
     const bool domain = previous.CompositionDomain == current.CompositionDomain ||
@@ -493,6 +496,13 @@ bool CompatibleComposition(const Oot3dPicaVulkanDrawPlan& previous, const Oot3dP
     const auto world = [](Oot3dPicaCompositionLayer layer) {
         return layer == Oot3dPicaCompositionLayer::OpaqueWorld || layer == Oot3dPicaCompositionLayer::TransparentWorld;
     };
+    // Draws of two different model instances (MM3D) are never the same draw.
+    static const bool modelPairs = std::getenv("TRIAEVUM_NO_MODEL_PAIRS") == nullptr;
+    if (modelPairs && !gModelPairsSuspended &&
+        previous.Composition.Provenance == Oot3dPicaCompositionProvenance::NativeModelInstance &&
+        current.Composition.Provenance == Oot3dPicaCompositionProvenance::NativeModelInstance &&
+        previous.Composition.NativeValue != current.Composition.NativeValue)
+        return false;
     return domain && (previous.Composition == current.Composition ||
                       previous.Composition.Layer == Oot3dPicaCompositionLayer::Unknown ||
                       current.Composition.Layer == Oot3dPicaCompositionLayer::Unknown ||
@@ -655,6 +665,9 @@ enum class VisualDrawMatchKind : uint8_t {
     // change as Tatl or a lamp comes near): its matrices are blended, its
     // fragment state is the current one.
     GeometryOrdinal,
+    // The same model instance's draw at the same position in its submission,
+    // as recorded from the game's model draw (MM3D).
+    ModelInstance,
 };
 
 struct VisualDrawMatch {
@@ -669,6 +682,7 @@ struct VisualDrawMatching {
     size_t StructuralOrdinalMatches = 0;
     size_t PipelineOrdinalMatches = 0;
     size_t GeometryOrdinalMatches = 0;
+    size_t ModelInstanceMatches = 0;
     size_t AmbiguousPrevious = 0;
     size_t AmbiguousCurrent = 0;
     size_t RejectedJumps = 0;
@@ -1035,6 +1049,42 @@ std::vector<size_t> MinimalCostAssignment(const std::vector<std::vector<double>>
     return result;
 }
 
+// Pairs draws by the model instance that submitted them: the k-th draw of
+// (model, position in its submission) with the previous frame's k-th, when
+// it is still the same mesh. Draw order does not matter.
+void MatchModelInstances(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
+                         std::vector<bool>& previousMatched, std::vector<bool>& currentMatched,
+                         VisualDrawMatching& matching) {
+    const auto keys = [](const std::vector<Oot3dPicaVulkanDrawPlan>& draws) {
+        std::vector<std::optional<uint64_t>> result(draws.size());
+        std::unordered_map<uint64_t, uint32_t> occurrences;
+        for (size_t index = 0; index < draws.size(); ++index) {
+            const auto& composition = draws[index].Composition;
+            if (composition.Provenance != Oot3dPicaCompositionProvenance::NativeModelInstance) continue;
+            const uint64_t base = (static_cast<uint64_t>(composition.NativeValue) << 32U) |
+                                  (static_cast<uint64_t>(composition.Ordinal) << 16U);
+            result[index] = base | (occurrences[base]++ & 0xFFFFU);
+        }
+        return result;
+    };
+    const auto previousKeys = keys(previous.Draws);
+    const auto currentKeys = keys(current.Draws);
+    std::unordered_map<uint64_t, size_t> previousByKey;
+    for (size_t index = 0; index < previousKeys.size(); ++index)
+        if (previousKeys[index].has_value()) previousByKey.emplace(*previousKeys[index], index);
+    for (size_t currentIndex = 0; currentIndex < currentKeys.size(); ++currentIndex) {
+        if (!currentKeys[currentIndex].has_value()) continue;
+        const auto found = previousByKey.find(*currentKeys[currentIndex]);
+        if (found == previousByKey.end() || previousMatched[found->second] ||
+            !HaveMatchingStructuralLayout(previous.Draws[found->second], current.Draws[currentIndex]))
+            continue;
+        previousMatched[found->second] = true;
+        currentMatched[currentIndex] = true;
+        matching.PreviousByCurrent[currentIndex] = VisualDrawMatch{found->second, VisualDrawMatchKind::ModelInstance};
+        ++matching.ModelInstanceMatches;
+    }
+}
+
 VisualDrawMatching BuildVisualDrawMatching(
     const Oot3dPicaVisualFrame& previous,
     const Oot3dPicaVisualFrame& current) {
@@ -1052,8 +1102,12 @@ VisualDrawMatching BuildVisualDrawMatching(
     const auto previousPipeline = ResolveVisualIdentities(previous.Draws, ComputePipelineDrawIdentity);
     const auto currentPipeline = ResolveVisualIdentities(current.Draws, ComputePipelineDrawIdentity);
 
+    static const bool modelPairs = std::getenv("TRIAEVUM_NO_MODEL_PAIRS") == nullptr;
+    if (modelPairs && !gModelPairsSuspended)
+        MatchModelInstances(previous, current, previousMatched, currentMatched, matching);
+
     MatchEqualCardinalityGroups(
-        previous, current, noPreviousMatches, previousMatched, currentMatched,
+        previous, current, previousMatched, previousMatched, currentMatched,
         matching.PreviousByCurrent, previousStrict, currentStrict,
         VisualDrawMatchKind::StrictUnique,
         VisualDrawMatchKind::StrictOrdinal, matching.StrictUniqueMatches,
@@ -1423,7 +1477,9 @@ VisualDrawMatching BuildVisualDrawMatching(
             };
             for (size_t currentIndex = 0; currentIndex < matching.PreviousByCurrent.size(); ++currentIndex) {
                 const auto& match = matching.PreviousByCurrent[currentIndex];
-                if (!match.has_value() || match->Kind == VisualDrawMatchKind::StrictUnique) continue;
+                if (!match.has_value() || match->Kind == VisualDrawMatchKind::StrictUnique ||
+                    match->Kind == VisualDrawMatchKind::ModelInstance)
+                    continue;
                 if (!UsesModelViewLayout(current.Draws[currentIndex].VertexShader.Uniforms) ||
                     !UsesModelViewLayout(previous.Draws[match->PreviousIndex].VertexShader.Uniforms))
                     continue;
@@ -1550,9 +1606,10 @@ VisualDrawMatching BuildVisualDrawMatching(
             if (!UsesModelViewLayout(before) || !UsesModelViewLayout(after)) continue;
             // (A unique pair is trusted when the camera is unknown: it may
             // have moved.)
-            if (assumedStillCamera && match->Kind == VisualDrawMatchKind::StrictUnique) continue;
-            const float limit = match->Kind == VisualDrawMatchKind::StrictUnique ? kMaximumUniqueJump
-                                                                                  : kMaximumOrdinalJump;
+            const bool exact = match->Kind == VisualDrawMatchKind::StrictUnique ||
+                               match->Kind == VisualDrawMatchKind::ModelInstance;
+            if (assumedStillCamera && exact) continue;
+            const float limit = exact ? kMaximumUniqueJump : kMaximumOrdinalJump;
             if (worldJump(before, after) > limit) {
                 previousMatched[match->PreviousIndex] = false;
                 currentMatched[currentIndex] = false;
@@ -1763,6 +1820,54 @@ VisualDrawMatching BuildVisualDrawMatching(
     if (jumpTrace && matching.RejectedJumps != 0)
         std::fprintf(stderr, "TRIAEVUM_JUMP_REJECTED draws=%zu repaired=%zu of=%zu\n", matching.RejectedJumps,
                      matching.RepairedPairs, current.Draws.size());
+    // TRIAEVUM_MODEL_PAIR_AUDIT=<file>: the draws whose identity pairing
+    // differs from the pairing without identities, with both jumps.
+    static FILE* modelAudit = [] {
+        const char* path = std::getenv("TRIAEVUM_MODEL_PAIR_AUDIT");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (modelAudit != nullptr && !gModelPairsSuspended) {
+        gModelPairsSuspended = true;
+        const auto without = BuildVisualDrawMatching(previous, current);
+        gModelPairsSuspended = false;
+        const auto position = [](const Oot3dPicaVulkanDrawPlan& draw) {
+            const auto& f = draw.VertexShader.Uniforms.Floats;
+            return std::array<float, 3>{f[20][3], f[21][3], f[22][3]};
+        };
+        const auto jump = [&](size_t previousIndex, size_t currentIndex) {
+            const auto a = position(previous.Draws[previousIndex]);
+            const auto b = position(current.Draws[currentIndex]);
+            const auto& d = matching.CameraDelta;
+            float squared = 0.0F;
+            for (size_t row = 0; row < 3U; ++row) {
+                const float moved = matching.CameraDeltaValid
+                                        ? d[row][0] * b[0] + d[row][1] * b[1] + d[row][2] * b[2] + d[row][3]
+                                        : b[row];
+                squared += (moved - a[row]) * (moved - a[row]);
+            }
+            return std::sqrt(squared);
+        };
+        size_t model = 0, differ = 0;
+        for (size_t currentIndex = 0; currentIndex < current.Draws.size(); ++currentIndex) {
+            const auto& with = matching.PreviousByCurrent[currentIndex];
+            if (!with.has_value() || with->Kind != VisualDrawMatchKind::ModelInstance) continue;
+            ++model;
+            const auto& other = without.PreviousByCurrent[currentIndex];
+            if (other.has_value() && other->PreviousIndex == with->PreviousIndex) continue;
+            ++differ;
+            const bool world = UsesModelViewLayout(current.Draws[currentIndex].VertexShader.Uniforms);
+            std::fprintf(modelAudit, "M %zu world=%d verts=%u model=%08x ord=%u id_jump=%.2f other=%d other_jump=%.2f other_kind=%d\n",
+                         currentIndex, world ? 1 : 0, current.Draws[currentIndex].VertexCount,
+                         current.Draws[currentIndex].Composition.NativeValue,
+                         current.Draws[currentIndex].Composition.Ordinal,
+                         world ? jump(with->PreviousIndex, currentIndex) : -1.0F,
+                         other.has_value() ? static_cast<int>(other->PreviousIndex) : -1,
+                         other.has_value() && world ? jump(other->PreviousIndex, currentIndex) : -1.0F,
+                         other.has_value() ? static_cast<int>(other->Kind) : -1);
+        }
+        std::fprintf(modelAudit, "F model=%zu differ=%zu draws=%zu camera=%d\n", model, differ,
+                     current.Draws.size(), matching.CameraDeltaValid ? 1 : 0);
+    }
     return matching;
 }
 

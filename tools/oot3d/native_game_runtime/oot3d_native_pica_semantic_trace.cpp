@@ -70,6 +70,8 @@ const char* CompositionProvenanceName(
         return "native_control_flow";
     case Oot3dPicaCompositionProvenance::NativeUiLifecycle:
         return "native_ui_lifecycle";
+    case Oot3dPicaCompositionProvenance::NativeModelInstance:
+        return "native_model_instance";
     case Oot3dPicaCompositionProvenance::Unknown:
         return "unknown";
     }

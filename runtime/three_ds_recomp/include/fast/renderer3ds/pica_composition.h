@@ -24,6 +24,7 @@ enum class PicaCompositionProvenance : uint8_t {
     NativeCmbDrawPass = 1,
     NativeControlFlow = 2,
     NativeUiLifecycle = 3,
+    NativeModelInstance = 4,
 };
 
 struct PicaCompositionAttribution {

@@ -45,9 +45,89 @@ void RequireCopyVk(VkResult result, const char* operation) {
 }
 }
 
+// A copy of whole tile rows of a render target into VRAM (a texture the
+// title samples later) stays on the GPU at the render target's resolution:
+// a snapshot sampled as the part of the texture the copy fills. MM3D's bells
+// shrink the frame through one every game frame; the CPU path stalled the GPU
+// and brought the frame back at the 3DS resolution (and mirrored).
+bool GfxRenderingAPIVulkan::SubmitGpuPicaTextureCopy(
+    const GfxNativePicaDisplayTransferView& transfer) {
+    static const bool cpuCopies = std::getenv("TRIAEVUM_CPU_TEXTURE_COPIES") != nullptr;
+    const uint32_t size = transfer.TextureCopyBytes & ~15U;
+    const uint32_t inputGap = uint32_t{transfer.InputHeight} * 16U;
+    const uint32_t outputGap = uint32_t{transfer.OutputHeight} * 16U;
+    const uint32_t inputWidth = uint32_t{transfer.InputWidth} * 16U;
+    const uint32_t outputWidth = uint32_t{transfer.OutputWidth} * 16U;
+    const bool vram = (transfer.OutputPhysicalAddress & 7U) == 0U &&
+                      transfer.OutputPhysicalAddress >= 0x18000000U &&
+                      transfer.OutputPhysicalAddress < 0x18600000U;
+    if (cpuCopies || !mFrameActive || transfer.Present || !vram || size == 0U ||
+        inputWidth == 0U || inputWidth != outputWidth || inputGap != outputGap || size % inputWidth != 0U) {
+        return false;
+    }
+    NativePicaRenderTarget* source = nullptr;
+    for (auto& [key, target] : mNativePicaRenderTargets) {
+        const uint64_t end = uint64_t{key.ColorPhysicalAddress} + uint64_t{key.Width} * key.Height * 4U;
+        if (key.RenderTargetNamespace == transfer.RenderTargetNamespace && key.ColorFormat == 0U &&
+            transfer.InputPhysicalAddress >= key.ColorPhysicalAddress && transfer.InputPhysicalAddress < end) {
+            source = &target;
+            break;
+        }
+    }
+    // Whole 8x8 RGBA8 tiles from the target's first line, all its lines.
+    if (source == nullptr) return false;
+    const uint32_t stride = source->Key.Width * 8U * 4U;
+    const uint32_t rows = size / inputWidth * 8U;
+    if (inputWidth + inputGap != stride || inputWidth % 256U != 0U ||
+        transfer.InputPhysicalAddress != source->Key.ColorPhysicalAddress || rows != source->Key.Height) {
+        return false;
+    }
+    EndNativePicaRenderPass();
+    if (mRenderPassActive) {
+        vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+        mRenderPassActive = false;
+        mOverlayRenderPassActive = false;
+    }
+    const auto displayKey = std::make_pair(transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress);
+    // A new game frame's copy first keeps the previous one (see the display
+    // transfers into VRAM).
+    if (const auto previous = mTransferTextures.find(displayKey);
+        previous != mTransferTextures.end() &&
+        previous->second.Latest.AfterDrawSubmissionId < transfer.AfterDrawSubmissionId) {
+        const auto image = mNativePicaDisplayImages.find(displayKey);
+        auto& entry = previous->second;
+        entry.HasOlder = false;
+        if (image != mNativePicaDisplayImages.end() && image->second.Initialized) {
+            CopyNativePicaDisplayImage(displayKey, {displayKey.first, displayKey.second | 2U},
+                                       image->second.Width, image->second.Height, 0U);
+            entry.Older.AfterDrawSubmissionId = entry.Latest.AfterDrawSubmissionId;
+            ++entry.Older.Writes;
+            entry.HasOlder = true;
+        }
+    }
+    auto& display = GetOrCreateNativePicaDisplayImage(displayKey.first, displayKey.second, source->Width,
+                                                      source->Height);
+    Oot3d::PicaDisplayTransferPlan plan;
+    plan.SourceWidth = plan.DestinationWidth = source->Width;
+    plan.SourceHeight = plan.DestinationHeight = source->Height;
+    if (!mNriPicaDisplayCopyPass.Execute({mCurrentFrame, mFrameCounter, source->ColorImage, display.Image,
+                                          VK_FORMAT_R8G8B8A8_UNORM, plan, false, display.Initialized})) {
+        return false;
+    }
+    display.Initialized = true;
+    auto& written = mTransferTextures[displayKey];
+    written.NativeWidth = source->Key.Width;
+    written.NativeHeight = rows;
+    written.TextureCopyStride = stride;
+    written.Latest.AfterDrawSubmissionId = transfer.AfterDrawSubmissionId;
+    ++written.Latest.Writes;
+    return true;
+}
+
 bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
     try {
+        if (SubmitGpuPicaTextureCopy(transfer)) return true;
         const auto previous = mRawTextureCopyWritebacks.find({transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress});
         if (previous != mRawTextureCopyWritebacks.end() && previous->second.CompletionId == transfer.CompletionId)
             return true;

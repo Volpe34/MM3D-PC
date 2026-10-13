@@ -848,7 +848,7 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
     if (!typedCompositionLayer) {
         value.Composition = {};
     } else if (!ReadEnum(reader, value.Composition.Layer, 4U) ||
-               !ReadEnum(reader, value.Composition.Provenance, 3U) ||
+               !ReadEnum(reader, value.Composition.Provenance, 4U) ||
                !reader.U32(value.Composition.SourcePc) ||
                !reader.U32(value.Composition.NativeValue)) {
         return false;

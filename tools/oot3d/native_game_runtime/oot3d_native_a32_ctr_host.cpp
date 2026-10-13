@@ -2905,6 +2905,7 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
                                 jumpPacket.Parameters[0] = virtualAddress;
                                 jumpPacket.Parameters[1] = size;
                                 NativeA32CtrPicaSubmissionResult jumpResult;
+                                mConfig.PicaFrontend->MarkNextListAsJumpContinuation();
                                 submitted = SubmitPicaGspCommand(
                                     jumpPacket, continuation, &jumpResult,
                                     &picaError);

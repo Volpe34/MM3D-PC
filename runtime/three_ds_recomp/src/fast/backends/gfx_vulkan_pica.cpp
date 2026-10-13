@@ -2708,11 +2708,31 @@ GfxRenderingAPIVulkan::ResolveTransferTexture(
         texture.NativeFormat > 4U) {
         return nullptr;
     }
-    const auto found = mTransferTextures.find({renderTargetNamespace, texture.PhysicalAddress});
+    auto found = mTransferTextures.find({renderTargetNamespace, texture.PhysicalAddress});
+    // A texture copy filling a texture's last lines (an RGBA8 texture of its
+    // row length).
+    if (found == mTransferTextures.end() && texture.NativeFormat == 0U) {
+        const uint64_t textureEnd = uint64_t{texture.PhysicalAddress} + uint64_t{texture.Width} * texture.Height * 4U;
+        for (auto it = mTransferTextures.lower_bound({renderTargetNamespace, texture.PhysicalAddress});
+             it != mTransferTextures.end() && it->first.first == renderTargetNamespace &&
+             it->first.second < textureEnd;
+             ++it) {
+            const auto& candidate = it->second;
+            const uint32_t offset = it->first.second - texture.PhysicalAddress;
+            if (candidate.TextureCopyStride != 0U && candidate.TextureCopyStride == texture.Width * 32U &&
+                offset % candidate.TextureCopyStride == 0U &&
+                offset / candidate.TextureCopyStride * 8U + candidate.NativeHeight == texture.Height) {
+                found = it;
+                break;
+            }
+        }
+    }
     if (found == mTransferTextures.end()) {
         return nullptr;
     }
     auto& entry = found->second;
+    const uint32_t entryAddress = found->first.second;
+    const bool textureCopy = entry.TextureCopyStride != 0U;
     if (texture.Width < entry.NativeWidth || texture.Height < entry.NativeHeight) {
         return nullptr;
     }
@@ -2734,7 +2754,7 @@ GfxRenderingAPIVulkan::ResolveTransferTexture(
         }
     }
     const auto key = std::make_pair(renderTargetNamespace,
-                                    texture.PhysicalAddress | (latest ? 0U : 2U));
+                                    entryAddress | (latest ? 0U : 2U));
     const auto display = mNativePicaDisplayImages.find(key);
     if (display == mNativePicaDisplayImages.end() || !display->second.Initialized) {
         return nullptr;
@@ -2758,7 +2778,15 @@ GfxRenderingAPIVulkan::ResolveTransferTexture(
             const char* value = std::getenv("TRIAEVUM_TRANSFER_TEXTURE_TRANSFORM");
             return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0)) : 4U;
         }();
-        CopyNativePicaDisplayImage(key, sizedKey, width, height, transform | 64U);
+        // A texture copy's snapshot is the render target itself: its lines
+        // reversed (as a transfer's) and at the texture's last lines (without
+        // the reversal the bells' shrunk frame was a mirror image).
+        // TRIAEVUM_TEXTURE_COPY_TRANSFORM overrides.
+        static const uint32_t copyTransform = [] {
+            const char* value = std::getenv("TRIAEVUM_TEXTURE_COPY_TRANSFORM");
+            return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0)) : 12U;
+        }();
+        CopyNativePicaDisplayImage(key, sizedKey, width, height, (textureCopy ? copyTransform : transform) | 64U);
         version.SizedWrites = version.Writes;
         sized = mNativePicaDisplayImages.find(sizedKey);
         if (sized == mNativePicaDisplayImages.end() || !sized->second.Initialized) {

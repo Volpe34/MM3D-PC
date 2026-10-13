@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,6 +42,16 @@ inline constexpr uint32_t kOot3dKankyoEffectPrimitiveDrawEntry = 0x003FB5ECU;
 inline constexpr uint32_t kOot3dPicaPrimitivePacketBuilderEntry = 0x00313444U;
 
 std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept;
+
+// Majora's Mask 3D v1.1: the model draw (r0 = model instance; it walks the
+// meshes and calls each mesh's prebuilt command block) and its only return.
+inline constexpr uint32_t kMm3dModelDrawEntry = 0x005E9254U;
+inline constexpr uint32_t kMm3dModelDrawReturn = 0x005EAD48U;
+inline constexpr uint32_t kMm3dCommandListCursorAddress = 0x006A3A88U;
+// Graphics context; +0x9C points to the bound command list, whose buffer
+// base is at +4.
+inline constexpr uint32_t kMm3dGraphicsContextAddress = 0x007B2700U;
+std::span<const uint32_t> Mm3dNativePicaCompositionHookPcs() noexcept;
 
 struct Oot3dNativePicaCompositionStats {
     uint64_t UiScopeEntries = 0;
@@ -80,6 +91,9 @@ struct Oot3dNativePicaCompositionStats {
     uint64_t PartiallyOverlappingSubmissions = 0;
     uint64_t EvictedPacketSpans = 0;
     uint64_t ReadFailures = 0;
+    uint64_t ModelDrawEntries = 0;
+    uint64_t ModelSpans = 0;
+    uint64_t InvalidModelSpans = 0;
 };
 
 // Observes native draw-control boundaries and exact mesh packet appends. It
@@ -96,6 +110,14 @@ class Oot3dNativePicaCompositionTracker final
         uint32_t commandListAddress, uint32_t commandListSize,
         std::vector<Oot3dPicaCommandListCompositionSpan>& spans,
         std::string* error = nullptr) override;
+
+    bool ResolveCommandAddress(
+        uint32_t address,
+        Oot3dPicaCompositionAttribution& attribution) const override;
+
+    // Records which model instance wrote each main command-list range
+    // instead of the OoT3D owners.
+    void EnableMm3dModelInstances() noexcept { mMm3dModelInstances = true; }
 
     void Reset() noexcept;
     [[nodiscard]] const Oot3dNativePicaCompositionStats& Stats() const
@@ -120,6 +142,31 @@ class Oot3dNativePicaCompositionTracker final
     };
 
     bool RecordPendingSpan(Oot3dPicaCommandListCompositionSpan span);
+    void ObserveMm3dBlockEntry(uint32_t pc,
+                               const oot3d::recomp::a32::GuestState& state,
+                               oot3d::recomp::a32::MemoryBus& memory);
+
+    struct ModelSpan {
+        uint32_t EndAddress = 0;
+        uint32_t Model = 0;
+        uint32_t ListBase = 0;
+        uint32_t ListSerial = 0;
+    };
+    struct ActiveModelDraw {
+        uint32_t Model = 0;
+        uint32_t BeginAddress = 0;
+    };
+    static constexpr size_t MaximumModelSpans = 65536U;
+    bool mMm3dModelInstances = false;
+    std::optional<ActiveModelDraw> mActiveModelDraw;
+    uint32_t mModelListBase = 0;
+    uint32_t mModelListCursor = 0;
+    uint32_t mModelListSerial = 0;
+    // Latest build of each list buffer; older ranges in it are stale.
+    std::map<uint32_t, uint32_t> mModelListSerials;
+    // Begin address -> range; a newer list written over an address replaces
+    // the older owner.
+    std::map<uint32_t, ModelSpan> mModelSpans;
 
     static constexpr size_t MaximumPendingSpans = 16384U;
 

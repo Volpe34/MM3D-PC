@@ -98,12 +98,18 @@ def main() -> int:
                         *(f"/home/work/{runtime.name}/{name}" for name in
                           ("TriAevum", "triaevum_title_aot.so", "oot3d_native_pica_aot_compiler"))], check=True)
         # The SDK's SDL2 is sdl2-compat, which loads SDL3 at runtime.
-        # Its less common dependencies come along, and libwayland-client (SDL3 needs
-        # 1.23, Ubuntu 24.04 has 1.22; newer clients work with any compositor).
-        # X11 and audio are the system's.
-        for name in ("libSDL3.so.0", "libdecor-0.so.0", "libfribidi.so.0", "libXss.so.1", "libXtst.so.6",
-                     "libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1"):
+        # Its less common dependencies come along. X11 and audio are the system's.
+        for name in ("libSDL3.so.0", "libdecor-0.so.0", "libfribidi.so.0", "libXss.so.1", "libXtst.so.6"):
             shutil.copy2((args.sdk / "usr/lib/x86_64-linux-gnu" / name).resolve(), out / "lib" / name)
+        # libwayland (SDL3 needs 1.23, Ubuntu 24.04 has 1.22) goes to lib/wayland:
+        # Play.sh uses it only when the system's is missing or older. A newer
+        # system Mesa driver needs its own libwayland, or Vulkan has no driver.
+        (out / "lib/wayland").mkdir()
+        for name in ("libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1"):
+            source = (args.sdk / "usr/lib/x86_64-linux-gnu" / name).resolve()
+            shutil.copy2(source, out / "lib/wayland" / name)
+            if name == "libwayland-client.so.0":
+                (out / "lib/wayland/VERSION").write_text(source.name.removeprefix("libwayland-client.so.") + "\n")
         for name in ("Setup.sh", "Play.sh", "BuildShaders.sh"):
             shutil.copy2(HERE / "linux" / name, out / name)
         (out / "setup").mkdir()

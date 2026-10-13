@@ -70,8 +70,30 @@ def runtime_environment(install: Path) -> dict:
         compat = install / "lib/compat/libstdc++.so.6"
         if compat.is_file() and newer_libstdcxx(compat):
             libs.append(str(compat.parent))
+        if (install / "lib/wayland/VERSION").is_file() and use_bundled_wayland(install / "lib/wayland"):
+            libs.append(str(install / "lib/wayland"))
         env["LD_LIBRARY_PATH"] = os.pathsep.join(libs + [env.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
     return env
+
+
+def ldconfig_listing() -> str:
+    # ldconfig lives in /sbin on some distributions, outside a user's PATH.
+    for tool in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        try:
+            return subprocess.run([tool, "-p"], capture_output=True, text=True).stdout
+        except OSError:
+            continue
+    return ""
+
+
+def use_bundled_wayland(folder: Path) -> bool:
+    """As Play.sh: the bundled libwayland only if the system's is missing or older."""
+    found = re.search(r"libwayland-client\.so\.0 \(libc6,x86-64\) => (\S+)", ldconfig_listing())
+    if not found or not Path(found.group(1)).exists():
+        return True
+    version = lambda text: tuple(int(part) for part in re.findall(r"\d+", text))
+    theirs = Path(found.group(1)).resolve().name.removeprefix("libwayland-client.so.")
+    return version((folder / "VERSION").read_text()) > version(theirs)
 
 
 def newer_libstdcxx(bundled: Path) -> bool:
@@ -83,12 +105,8 @@ def newer_libstdcxx(bundled: Path) -> bool:
             return ()
         return (max(int(v) for v in versions),) if versions else ()
     system = ()
-    try:
-        listing = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
-        found = re.search(r"libstdc\+\+\.so\.6 \(libc6,x86-64\) => (\S+)", listing)
-        system = newest(Path(found.group(1))) if found else ()
-    except OSError:
-        pass
+    found = re.search(r"libstdc\+\+\.so\.6 \(libc6,x86-64\) => (\S+)", ldconfig_listing())
+    system = newest(Path(found.group(1))) if found else ()
     return not system or newest(bundled) > system
 
 
@@ -99,7 +117,7 @@ def run_session(install: Path, work: Path, runs: Path, env: dict, form: int, gro
     windows = sys.platform == "win32"
     session_env = dict(env, TRIAEVUM_WARP_ENTRANCES=",".join(hex(g << 9) for g in groups),
                        TRIAEVUM_WARP_SECONDS=str(seconds), TRIAEVUM_PLAYER_FORM=str(form),
-                       TRIAEVUM_CRASH_DIR=str(work / "reports"))
+                       TRIAEVUM_CRASH_DIR=str(work / "reports"), TRIAEVUM_BACKGROUND_WINDOW="1")
     total = BOOT_SECONDS + seconds * len(groups)
     command = [str(install / ("TriAevum.exe" if windows else "TriAevum")),
                "--title-plugin", str(install / "private" / ("mm3d_title_aot.dll" if windows else "mm3d_title_aot.so")),
@@ -180,8 +198,11 @@ def main() -> int:
                 sessions.append((form, batch, tag))
     jobs = args.jobs or default_jobs()
     print(f"Shader tour: {len(sessions)} sessions, {jobs} at a time "
-          f"(about {round(len(sessions) * (BOOT_SECONDS + args.seconds * BATCH) / jobs / 60)} minutes). "
-          "Game windows open and close by themselves.", flush=True)
+          f"(about {round(len(sessions) * (BOOT_SECONDS + args.seconds * BATCH) / jobs / 60)} minutes).\n"
+          "  Small game windows will open and close by themselves many times: this is normal,\n"
+          "  it is the setup playing through the areas to prepare the graphics. Do not close them;\n"
+          "  you can keep using the computer. Closing this console stops it (the game works anyway).",
+          flush=True)
     started, finished, failed = time.time(), 0, 0
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         futures = {pool.submit(run_session, install, work, runs, env, form, batch, args.seconds, tag): tag

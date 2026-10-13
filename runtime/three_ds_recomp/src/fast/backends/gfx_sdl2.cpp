@@ -1,5 +1,6 @@
 #if defined(ENABLE_OPENGL) || defined(__APPLE__)
 
+#include <cstdlib>
 #include <algorithm>
 #include <stdio.h>
 #include <stdexcept>
@@ -465,6 +466,11 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
         flags = flags | SDL_WINDOW_METAL;
     }
 
+    // Background sessions (the setup's shader tour) open without taking the
+    // focus from what the player is doing.
+    if (std::getenv("TRIAEVUM_BACKGROUND_WINDOW") != nullptr) {
+        SDL_SetHint("SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN", "1");
+    }
     mWnd = SDL_CreateWindow(title, posX, posY, mWindowWidth, mWindowHeight, flags);
     if (mWnd == nullptr) {
         throw std::runtime_error(std::string("SDL window creation failed for ") + gfxApiName + ": " +

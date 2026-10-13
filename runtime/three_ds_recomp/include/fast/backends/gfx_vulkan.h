@@ -775,6 +775,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         };
         uint32_t NativeWidth = 0;
         uint32_t NativeHeight = 0;
+        // A texture copy's tile-row stride in bytes: it lands inside a larger
+        // texture of that row length (0: a display transfer, at the address).
+        uint32_t TextureCopyStride = 0;
         Version Latest;
         Version Older;
         bool HasOlder = false;
@@ -784,6 +787,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
                                           uint64_t renderTargetNamespace,
                                           uint64_t drawSubmissionId);
     TextureRecord* ResolveSubstituteTexture(const GfxNativePicaTextureView& texture);
+    bool SubmitGpuPicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer);
     TextureRecord* BindDisplayImageAsTexture(TextureRecord& record,
                                              const NativePicaDisplayImage& display,
                                              const GfxNativePicaTextureView& texture);

@@ -140,6 +140,9 @@ enum class Oot3dPicaCompositionProvenance : uint8_t {
     NativeCmbDrawPass = 1,
     NativeControlFlow = 2,
     NativeUiLifecycle = 3,
+    // One model instance's draw (MM3D): NativeValue is the guest model
+    // pointer, Ordinal the draw's position inside that model's submission.
+    NativeModelInstance = 4,
 };
 
 struct Oot3dPicaCompositionAttribution {
@@ -149,6 +152,7 @@ struct Oot3dPicaCompositionAttribution {
         Oot3dPicaCompositionProvenance::Unknown;
     uint32_t SourcePc = 0;
     uint32_t NativeValue = 0;
+    uint16_t Ordinal = 0;
 
     bool operator==(const Oot3dPicaCompositionAttribution&) const = default;
 };
@@ -169,6 +173,12 @@ class Oot3dPicaCommandListCompositionProvider {
         uint32_t commandListAddress, uint32_t commandListSize,
         std::vector<Oot3dPicaCommandListCompositionSpan>& spans,
         std::string* error = nullptr) = 0;
+    // Attribution of one guest command address recorded across lists (the
+    // owner of a call site in a list executed through command-buffer jumps).
+    virtual bool ResolveCommandAddress(
+        uint32_t, Oot3dPicaCompositionAttribution&) const {
+        return false;
+    }
 };
 
 struct Oot3dGspCommandPacket {
@@ -353,6 +363,16 @@ class Oot3dNativePicaFrontend {
         mPendingCommandBufferJump.reset();
         return jump;
     }
+    // The next submitted list is the target of the jump just taken. A jump
+    // on channel 0 calls a shared block (a mesh) that returns on channel 1;
+    // draws inside it are attributed at the caller's jump address.
+    void MarkNextListAsJumpContinuation() noexcept {
+        mNextListIsContinuation = true;
+    }
+    void SetCompositionAddressResolver(
+        const Oot3dPicaCommandListCompositionProvider* resolver) noexcept {
+        mCompositionAddressResolver = resolver;
+    }
     bool SubmitGspCommand(const Oot3dGspCommandPacket& command,
                           std::span<const uint32_t> commandListWords = {},
                           std::string* error = nullptr,
@@ -390,6 +410,13 @@ class Oot3dNativePicaFrontend {
     std::vector<Oot3dPicaHardwareRegisterWrite> mPendingWrites;
     std::array<uint32_t, 0x300> mPicaRegisters{};
     std::optional<std::pair<uint32_t, uint32_t>> mPendingCommandBufferJump;
+    uint32_t mPendingJumpSource = 0;
+    bool mPendingJumpIsCall = false;
+    bool mNextListIsContinuation = false;
+    std::optional<uint32_t> mJumpCallSite;
+    const Oot3dPicaCommandListCompositionProvider*
+        mCompositionAddressResolver = nullptr;
+    Oot3dPicaCompositionAttribution mLastModelAttribution;
     std::vector<Oot3dGspCommandPacket> mPendingGspCommands;
     std::vector<Oot3dPicaRegisterWrite> mPendingRegisterWrites;
     std::vector<Oot3dPicaDrawPacket> mPendingDrawPackets;

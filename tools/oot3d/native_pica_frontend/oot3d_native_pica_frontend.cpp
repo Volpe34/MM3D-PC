@@ -195,7 +195,7 @@ bool Oot3dNativePicaFrontend::SetNextCommandListCompositionSpans(
             span.BeginAddress < previousEnd ||
             span.Attribution.Layer > Oot3dPicaCompositionLayer::Ui ||
             span.Attribution.Provenance >
-                Oot3dPicaCompositionProvenance::NativeUiLifecycle) {
+                Oot3dPicaCompositionProvenance::NativeModelInstance) {
             SetError(error, "composition span range or attribution is invalid");
             return false;
         }
@@ -585,7 +585,52 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                    ? candidate.Attribution
                    : Oot3dPicaCompositionAttribution{};
     };
+    if (mNextListIsContinuation) {
+        mNextListIsContinuation = false;
+        if (!mPendingJumpIsCall) {
+            mJumpCallSite.reset();
+        } else if (!mJumpCallSite.has_value()) {
+            mJumpCallSite = mPendingJumpSource;
+        }
+    } else {
+        mJumpCallSite.reset();
+        mLastModelAttribution = {};
+    }
+    // Spans of this list first; otherwise the owner recorded at the guest
+    // address (a called block's draws belong to the caller's jump).
+    const auto resolveDrawComposition =
+        [&](uint32_t offsetWords) -> Oot3dPicaCompositionAttribution {
+        auto attribution = resolveComposition(offsetWords);
+        if (attribution.Provenance == Oot3dPicaCompositionProvenance::Unknown &&
+            mCompositionAddressResolver != nullptr &&
+            mCommandListCompositionDomain != Oot3dPicaCompositionDomain::Ui) {
+            const uint32_t address = mJumpCallSite.value_or(
+                commandListAddress + offsetWords * 4U);
+            mCompositionAddressResolver->ResolveCommandAddress(address, attribution);
+        }
+        if (attribution.Provenance ==
+            Oot3dPicaCompositionProvenance::NativeModelInstance) {
+            auto key = attribution;
+            key.Ordinal = mLastModelAttribution.Ordinal;
+            attribution.Ordinal =
+                key == mLastModelAttribution
+                    ? static_cast<uint16_t>(mLastModelAttribution.Ordinal + 1U)
+                    : 0U;
+            mLastModelAttribution = attribution;
+        }
+        return attribution;
+    };
 
+    // TRIAEVUM_DRAWCHAIN_TRACE=<file>: every list (L address size), jump
+    // (J offset channel) and draw (D offset count index-address attribute-base
+    // M provenance model ordinal) in execution order.
+    static FILE* drawChain = [] {
+        const char* path = std::getenv("TRIAEVUM_DRAWCHAIN_TRACE");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (drawChain != nullptr) {
+        std::fprintf(drawChain, "L %08x %x\n", commandListAddress, commandListSize);
+    }
     size_t cursor = 0;
     bool stopRequested = false;
     bool drawSubmitted = false;
@@ -650,7 +695,7 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                         ComputeOot3dPicaLightingLutContentHash(*mLightingLuts);
                     mLightingLuts->ContentHashAvailable = true;
                 }
-                const auto composition = resolveComposition(offsetWords);
+                const auto composition = resolveDrawComposition(offsetWords);
                 auto domain = mCommandListCompositionDomain;
                 switch (composition.Layer) {
                     case Oot3dPicaCompositionLayer::OpaqueWorld:
@@ -691,6 +736,13 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                     !mPacketSink->SubmitDrawPacket(draw, error)) {
                     return false;
                 }
+                if (drawChain != nullptr) {
+                    std::fprintf(drawChain, "D %x %x %x %x %x M %u %08x %u\n", offsetWords * 4U,
+                                 mPicaRegisters[0x228U], mPicaRegisters[0x227U],
+                                 mPicaRegisters[0x200U], mPicaRegisters[0x203U],
+                                 static_cast<unsigned>(composition.Provenance),
+                                 composition.NativeValue, composition.Ordinal);
+                }
                 drawSubmitted = true;
                 if (mDiagnosticHistoryEnabled) {
                     mPendingDrawPackets.push_back(std::move(draw));
@@ -698,6 +750,11 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
             }
             if ((id == 0x23CU || id == 0x23DU) && supported) {
                 const bool first = id == 0x23CU;
+                if (drawChain != nullptr) {
+                    std::fprintf(drawChain, "J %x %c\n", offsetWords * 4U, first ? '0' : '1');
+                }
+                mPendingJumpIsCall = first;
+                mPendingJumpSource = commandListAddress + offsetWords * 4U;
                 mPendingCommandBufferJump = std::make_pair(
                     mPicaRegisters[first ? 0x23AU : 0x23BU] << 3U,
                     mPicaRegisters[first ? 0x238U : 0x239U] << 3U);
