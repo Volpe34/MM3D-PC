@@ -13,6 +13,11 @@ and a single-screen layout, so no touch screen is needed.
 > extracts it, translates the code and builds the game module on your PC.
 > Nothing of the game is downloaded or distributed.
 
+## Made with AI
+
+This whole project was made by AI (Claude) under human review: I directed it,
+tested it and decided what goes in. Love it or hate it, i could not care less if you dont want to play it because it's vibecoded.
+
 ## Status, please read
 
 This was mostly a personal project that I decided to share. **Performance

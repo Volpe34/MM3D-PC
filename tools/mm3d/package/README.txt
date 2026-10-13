@@ -6,6 +6,9 @@ The Legend of Zelda: Majora's Mask 3D (USA, v1.1) as a .3ds or .cci file.
 Setup translates the game code from YOUR dump on YOUR computer; nothing of the
 game is downloaded or included.
 
+Made with AI
+  This whole project was made by AI (Claude) under human review.
+
 Requirements
   - Windows 10/11 x64, or Linux x64 with glibc 2.38+ (Ubuntu 24.04+, Debian 13,
     Fedora 39+, Arch, SteamOS...)
