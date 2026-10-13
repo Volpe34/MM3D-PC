@@ -13,6 +13,14 @@ and a single-screen layout, so no touch screen is needed.
 > extracts it, translates the code and builds the game module on your PC.
 > Nothing of the game is downloaded or distributed.
 
+## Status, please read
+
+This was mostly a personal project that I decided to share. **Performance
+may be bad right now** (stutter, frame drops, rough edges on some PCs), and
+**I don't know if I will keep working on it.** I'm publishing it mostly so
+that other people can pick it up, learn from it or continue it. Forks and
+pull requests are welcome.
+
 ## Features
 
 - **Native code.** The game logic runs exactly as on the 3DS (30 Hz). It is
@@ -141,8 +149,11 @@ It fails if any byte run of the game is found in the package.
   `THIRD_PARTY_NOTICES.md` and `LICENSE_SCOPE.md`.
 - **Azahar**, **Ship of Harkinian / libultraship**, **NVIDIA NRI** and the
   other projects listed in `THIRD_PARTY_NOTICES.md`.
-- The **TopScreen** and mm3d single-screen mods, for the single-screen
-  design.
+- **[mm3d-dekui](https://github.com/tgacquin/mm3d-dekui)** by tgacquin, the
+  single-screen mod for Majora's Mask 3D. Its approach to bringing the
+  bottom-screen menus onto one screen was the main reference for the
+  single-screen layout here.
+- **TopScreen**, the single-screen HUD design of TriAevum.
 - **Project Restoration** and the MM3D decompilation/randomizer projects, for
   game structure research.
 - **Nintendo** and **Grezzo**, who made the game. This is a fan project, not
