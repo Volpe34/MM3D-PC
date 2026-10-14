@@ -4,10 +4,12 @@
 #include "fast/renderer3ds/pica_camera_temporal_policy.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -670,6 +672,23 @@ enum class VisualDrawMatchKind : uint8_t {
     ModelInstance,
 };
 
+// One model's own motion from the previous frame to the current one (Link
+// turning round): current = R * (previous - PreviousPivot) + CurrentPivot,
+// shared by all its bones and draws. Blending each bone as its own rotation
+// around its own origin while the origins move in straight lines tore the
+// joints apart in between (a hand off the wrist, legs apart, turning fast).
+struct ModelMotion {
+    std::array<float, 4> Rotation{0.0F, 0.0F, 0.0F, 1.0F};  // x y z w
+    std::array<float, 3> PreviousPivot{}, CurrentPivot{};
+    float Radius = 0.0F;  // how far its bones reach from the pivot
+    // Measured with the previous pose seen from the current view (the rigid
+    // camera path), otherwise in each frame's own view.
+    bool RigidCameraSpace = false;
+    // Turned so far in one game frame that the game itself snaps (Link
+    // reversing: 180 degrees, either way round): shown at the nearer frame.
+    bool Snap = false;
+};
+
 struct VisualDrawMatch {
     size_t PreviousIndex = 0;
     VisualDrawMatchKind Kind = VisualDrawMatchKind::StrictUnique;
@@ -699,6 +718,13 @@ struct VisualDrawMatching {
     std::array<std::array<float, 4>, 3> CameraDelta{};
     size_t UnmatchedPrevious = 0;
     size_t UnmatchedCurrent = 0;
+    std::vector<ModelMotion> Motions;
+    std::vector<uint32_t> MotionByCurrent;  // index into Motions, or none
+
+    const ModelMotion* MotionFor(size_t currentIndex) const {
+        if (currentIndex >= MotionByCurrent.size() || MotionByCurrent[currentIndex] >= Motions.size()) return nullptr;
+        return &Motions[MotionByCurrent[currentIndex]];
+    }
 };
 
 struct VisualDrawDeltaFlags {
@@ -1061,9 +1087,15 @@ void MatchModelInstances(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVi
         for (size_t index = 0; index < draws.size(); ++index) {
             const auto& composition = draws[index].Composition;
             if (composition.Provenance != Oot3dPicaCompositionProvenance::NativeModelInstance) continue;
-            const uint64_t base = (static_cast<uint64_t>(composition.NativeValue) << 32U) |
-                                  (static_cast<uint64_t>(composition.Ordinal) << 16U);
-            result[index] = base | (occurrences[base]++ & 0xFFFFU);
+            // The mesh (its index data) rather than its place in the model's
+            // list: a model that adds or drops a mesh (Link drawing or putting
+            // away the sword, switching hands) shifted every later place.
+            const uint64_t mesh = draws[index].IndexPhysicalAddress != 0U
+                                      ? static_cast<uint64_t>(draws[index].IndexPhysicalAddress)
+                                      : (1ULL << 32U) | composition.Ordinal;
+            uint64_t base = static_cast<uint64_t>(composition.NativeValue) * 0x9E3779B97F4A7C15ULL;
+            base ^= mesh + 0x632BE59BD9B4E019ULL + (base << 6U) + (base >> 2U);
+            result[index] = base ^ (static_cast<uint64_t>(occurrences[base]++) * 0xD6E8FEB86659FD93ULL);
         }
         return result;
     };
@@ -1084,6 +1116,9 @@ void MatchModelInstances(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVi
         ++matching.ModelInstanceMatches;
     }
 }
+
+void ComputeModelMotions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
+                         VisualDrawMatching& matching);
 
 VisualDrawMatching BuildVisualDrawMatching(
     const Oot3dPicaVisualFrame& previous,
@@ -1713,14 +1748,15 @@ VisualDrawMatching BuildVisualDrawMatching(
                          draw.State.Framebuffer.Flipped ? 1U : 0U, draw.BaseVertex,
                          static_cast<unsigned>(draw.Composition.Provenance), draw.Composition.SourcePc,
                          draw.State.VertexInput.IndexPhysicalAddress);
-            std::fprintf(matchAudit, "D %zu %d %d %d %016llx %016llx %08x %08x %u %d %.3f %.3f %.3f\n", currentIndex,
+            std::fprintf(matchAudit, "D %zu %d %d %d %016llx %016llx %08x %08x %u %d %.3f %.3f %.3f %08x %u\n", currentIndex,
                          match.has_value() ? static_cast<int>(match->PreviousIndex) : -1,
                          match.has_value() ? static_cast<int>(match->Kind) : -1,
                          UsesModelViewLayout(draw.VertexShader.Uniforms) ? 1 : 0,
                          static_cast<unsigned long long>(currentStrict[currentIndex]),
                          static_cast<unsigned long long>(currentStructural[currentIndex]), texture,
                          draw.State.VertexInput.PhysicalBaseAddress, draw.VertexCount,
-                         static_cast<int>(draw.Composition.Layer), f[20][3], f[21][3], f[22][3]);
+                         static_cast<int>(draw.Composition.Layer), f[20][3], f[21][3], f[22][3],
+                         draw.Composition.NativeValue, draw.Composition.Ordinal);
         }
     }
     if (matchAudit != nullptr) {
@@ -1868,6 +1904,7 @@ VisualDrawMatching BuildVisualDrawMatching(
         std::fprintf(modelAudit, "F model=%zu differ=%zu draws=%zu camera=%d\n", model, differ,
                      current.Draws.size(), matching.CameraDeltaValid ? 1 : 0);
     }
+    ComputeModelMotions(previous, current, matching);
     return matching;
 }
 
@@ -2185,6 +2222,323 @@ bool CameraInterpolationEnabled() {
     return !disabled;
 }
 
+Quaternion MultiplyQuaternion(const Quaternion& a, const Quaternion& b) {
+    return {a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
+}
+
+// The rotation q applied for a fraction w of its angle.
+Quaternion PartialQuaternion(Quaternion q, float w) {
+    if (q[3] < 0.0F)
+        for (float& v : q) v = -v;
+    const float angle = std::acos(std::clamp(q[3], -1.0F, 1.0F));
+    const float sine = std::sin(angle);
+    if (!(sine > 1.0e-6F)) return {0.0F, 0.0F, 0.0F, 1.0F};
+    const float scale = std::sin(angle * w) / sine;
+    return {q[0] * scale, q[1] * scale, q[2] * scale, std::cos(angle * w)};
+}
+
+std::array<std::array<float, 3>, 3> QuaternionMatrix(const Quaternion& q) {
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    return {{
+        {1.0F - 2.0F * (y * y + z * z), 2.0F * (x * y - z * w), 2.0F * (x * z + y * w)},
+        {2.0F * (x * y + z * w), 1.0F - 2.0F * (x * x + z * z), 2.0F * (y * z - x * w)},
+        {2.0F * (x * z - y * w), 2.0F * (y * z + x * w), 1.0F - 2.0F * (x * x + y * y)},
+    }};
+}
+
+// Rows 20.. hold the bone palette, and after the bones the model's other
+// constants (lights, material): those do not change between the frames, or
+// are no transform at all (a singular 3x3).
+bool RowsMoved(const Oot3dPicaVertexUniformState& previous, const Oot3dPicaVertexUniformState& current,
+               size_t first) {
+    bool moved = false;
+    for (size_t row = 0; row < 3U; ++row)
+        if (previous.Floats[first + row] != current.Floats[first + row]) moved = true;
+    if (!moved) return false;
+    const float a = Determinant3(AffineAt(previous, first)), b = Determinant3(AffineAt(current, first));
+    return std::isfinite(a) && std::isfinite(b) && std::abs(a) > 1.0e-15F && std::abs(b) > 1.0e-15F;
+}
+
+// x -> rotation * (x - from) + to, applied to the model/bone matrices.
+void MoveMatrices(const std::array<std::array<float, 3>, 3>& rotation, const std::array<float, 3>& from,
+                  const std::array<float, 3>& to, Oot3dPicaVertexUniformState& uniforms,
+                  const Oot3dPicaVertexUniformState& rawPrevious, const Oot3dPicaVertexUniformState& rawCurrent) {
+    for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+        if (!RowsMoved(rawPrevious, rawCurrent, first)) continue;
+        const auto m = AffineAt(uniforms, first);
+        for (size_t r = 0; r < 3U; ++r) {
+            float translation = to[r];
+            for (size_t k = 0; k < 3U; ++k) translation += rotation[r][k] * (m[k][3] - from[k]);
+            for (size_t c = 0; c < 3U; ++c) {
+                float value = 0.0F;
+                for (size_t k = 0; k < 3U; ++k) value += rotation[r][k] * m[k][c];
+                uniforms.Floats[first + r][c] = value;
+            }
+            uniforms.Floats[first + r][3] = translation;
+        }
+    }
+}
+
+bool RigidCameraApplies(const VisualDrawMatching& matching, const Oot3dPicaVertexUniformState& previous,
+                        const Oot3dPicaVertexUniformState& current) {
+    return matching.RigidCamera && CameraInterpolationEnabled() && matching.CameraDeltaValid &&
+           UsesModelViewLayout(previous) && UsesModelViewLayout(current);
+}
+
+// Per model instance (its draws share the model pointer; a draw paired some
+// other way is its own model): the rotation most of its bones made, found by
+// consensus (rows the shader does not use hold leftovers), with where those
+// bones went. Small turns stay linear, turns the game snaps snap.
+void ComputeModelMotions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
+                         VisualDrawMatching& matching) {
+    static const bool disabled = std::getenv("TRIAEVUM_NO_MODEL_MOTION") != nullptr;
+    static const bool trace = std::getenv("TRIAEVUM_MODEL_MOTION_TRACE") != nullptr;
+    matching.Motions.clear();
+    matching.MotionByCurrent.assign(current.Draws.size(), std::numeric_limits<uint32_t>::max());
+    if (disabled) return;
+    std::optional<Affine34> inverseCamera;
+    if (matching.RigidCamera && matching.CameraDeltaValid) inverseCamera = InvertAffine(matching.CameraDelta);
+    struct Row {
+        Quaternion Relative;
+        std::array<float, 3> From, To;
+    };
+    struct Group {
+        std::vector<size_t> Draws;
+        std::vector<Row> Rows;
+        std::vector<Row> ReloadedRows;  // same as the draw before: maybe its own, maybe not
+        bool RigidSpace = false;
+    };
+    std::unordered_map<uint64_t, Group> groups;
+    for (size_t currentIndex = 0; currentIndex < current.Draws.size(); ++currentIndex) {
+        const auto& match = matching.PreviousByCurrent[currentIndex];
+        if (!match.has_value()) continue;
+        const auto& currentUniforms = current.Draws[currentIndex].VertexShader.Uniforms;
+        const auto& previousUniforms = previous.Draws[match->PreviousIndex].VertexShader.Uniforms;
+        if (!UsesModelViewLayout(previousUniforms) || !UsesModelViewLayout(currentUniforms)) continue;
+        const bool rigid = RigidCameraApplies(matching, previousUniforms, currentUniforms) && inverseCamera;
+        const auto& composition = current.Draws[currentIndex].Composition;
+        const uint64_t key =
+            (composition.Provenance == Oot3dPicaCompositionProvenance::NativeModelInstance
+                 ? static_cast<uint64_t>(composition.NativeValue)
+                 : (1ULL << 40U) | currentIndex) |
+            (rigid ? 1ULL << 48U : 0ULL);
+        auto& group = groups[key];
+        group.RigidSpace = rigid;
+        group.Draws.push_back(currentIndex);
+        // The uniform file keeps what the draw before set: rows this draw
+        // did not load are someone else's (a wall drawn after Link holds
+        // Link's bones in the rows it does not use).
+        const Oot3dPicaVertexUniformState* before =
+            currentIndex > 0U ? &current.Draws[currentIndex - 1U].VertexShader.Uniforms : nullptr;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+            if (!RowsMoved(previousUniforms, currentUniforms, first)) continue;
+            const bool reloaded = before != nullptr && !RowsMoved(*before, currentUniforms, first);
+            auto a = AffineAt(previousUniforms, first);
+            if (rigid) a = MultiplyAffine(*inverseCamera, a);
+            const auto b = AffineAt(currentUniforms, first);
+            Quaternion qa{}, qb{};
+            std::array<float, 3> sa{}, sb{};
+            if (!DecomposeRotationScale(a, qa, sa) || !DecomposeRotationScale(b, qb, sb)) continue;
+            Row row;
+            row.Relative = MultiplyQuaternion(qb, {-qa[0], -qa[1], -qa[2], qa[3]});
+            for (size_t r = 0; r < 3U; ++r) {
+                row.From[r] = a[r][3];
+                row.To[r] = b[r][3];
+            }
+            if (!std::all_of(row.Relative.begin(), row.Relative.end(), [](float v) { return std::isfinite(v); }))
+                continue;
+            (reloaded ? group.ReloadedRows : group.Rows).push_back(row);
+        }
+    }
+    // A model drawn right after the one holding it can load the same bone
+    // (Link's hand after his arm): then those rows are all it has.
+    for (auto& [key, group] : groups)
+        if (group.Rows.empty()) group.Rows = std::move(group.ReloadedRows);
+    if (trace) {
+        std::vector<bool> previousUsed(previous.Draws.size(), false);
+        for (size_t i = 0; i < current.Draws.size(); ++i) {
+            const auto& match = matching.PreviousByCurrent[i];
+            if (match.has_value()) { previousUsed[match->PreviousIndex] = true; continue; }
+            const auto& u = current.Draws[i].VertexShader.Uniforms;
+            std::fprintf(stderr, "TRIAEVUM_UNPAIRED cur draw=%zu model=%08x ord=%u verts=%u idx=%08x t=%.0f,%.0f,%.0f\n", i,
+                         current.Draws[i].Composition.NativeValue, current.Draws[i].Composition.Ordinal,
+                         current.Draws[i].VertexCount, current.Draws[i].IndexPhysicalAddress, u.Floats[20][3], u.Floats[21][3], u.Floats[22][3]);
+        }
+        for (size_t i = 0; i < previous.Draws.size(); ++i) {
+            if (previousUsed[i]) continue;
+            const auto& u = previous.Draws[i].VertexShader.Uniforms;
+            std::fprintf(stderr, "TRIAEVUM_UNPAIRED prev draw=%zu model=%08x ord=%u verts=%u idx=%08x t=%.0f,%.0f,%.0f\n", i,
+                         previous.Draws[i].Composition.NativeValue, previous.Draws[i].Composition.Ordinal,
+                         previous.Draws[i].VertexCount, previous.Draws[i].IndexPhysicalAddress, u.Floats[20][3], u.Floats[21][3], u.Floats[22][3]);
+        }
+    }
+    if (trace)
+        for (auto& [key, group] : groups)
+            if (group.Rows.empty())
+                std::fprintf(stderr, "TRIAEVUM_MODEL_MOTION key=%zx model=%08x draws=%zu no rows\n", group.Draws.front(),
+                             current.Draws[group.Draws.front()].Composition.NativeValue, group.Draws.size());
+    constexpr float kAgree = 0.9848F;      // within 20 degrees of each other
+    constexpr float kLinearAngle = 0.21F;  // radians (12 degrees): linear is fine
+    constexpr float kSnapAngle = 1.75F;    // radians (100 degrees)
+    // Largest models first: what a smaller one carries along (Link's sword,
+    // shield, mask: models of their own) takes the carrier's motion when that
+    // motion explains its own, so it stays where it is held.
+    std::vector<Group*> ordered;
+    for (auto& [key, group] : groups) ordered.push_back(&group);
+    std::sort(ordered.begin(), ordered.end(), [](const Group* a, const Group* b) {
+        return a->Rows.size() != b->Rows.size() ? a->Rows.size() > b->Rows.size() : a->Draws < b->Draws;
+    });
+    for (Group* groupPointer : ordered) {
+        auto& group = *groupPointer;
+        const uint64_t key = group.Draws.front();
+        if (group.Rows.empty()) continue;
+        const auto dot = [](const Quaternion& a, const Quaternion& b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+        };
+        const size_t stride = std::max<size_t>(1U, group.Rows.size() / 48U);
+        size_t best = 0, bestVotes = 0;
+        for (size_t i = 0; i < group.Rows.size(); i += stride) {
+            size_t votes = 0;
+            for (const auto& other : group.Rows)
+                if (std::abs(dot(group.Rows[i].Relative, other.Relative)) > kAgree) ++votes;
+            if (votes > bestVotes) { bestVotes = votes; best = i; }
+        }
+        const Quaternion reference = group.Rows[best].Relative;
+        Quaternion sum{};
+        ModelMotion motion;
+        motion.RigidCameraSpace = group.RigidSpace;
+        size_t count = 0;
+        for (const auto& row : group.Rows) {
+            const float d = dot(reference, row.Relative);
+            if (std::abs(d) <= kAgree) continue;
+            const float sign = d < 0.0F ? -1.0F : 1.0F;
+            for (size_t i = 0; i < 4U; ++i) sum[i] += sign * row.Relative[i];
+            for (size_t r = 0; r < 3U; ++r) {
+                motion.PreviousPivot[r] += row.From[r];
+                motion.CurrentPivot[r] += row.To[r];
+            }
+            ++count;
+        }
+        const float length = std::sqrt(dot(sum, sum));
+        if (count == 0U || !(length > 1.0e-6F)) continue;
+        for (size_t i = 0; i < 4U; ++i) motion.Rotation[i] = sum[i] / length;
+        if (motion.Rotation[3] < 0.0F)
+            for (float& v : motion.Rotation) v = -v;
+        for (size_t r = 0; r < 3U; ++r) {
+            motion.PreviousPivot[r] /= static_cast<float>(count);
+            motion.CurrentPivot[r] /= static_cast<float>(count);
+        }
+        for (const auto& row : group.Rows) {
+            float squared = 0.0F;
+            for (size_t r = 0; r < 3U; ++r)
+                squared += (row.To[r] - motion.CurrentPivot[r]) * (row.To[r] - motion.CurrentPivot[r]);
+            motion.Radius = std::max(motion.Radius, std::sqrt(squared));
+        }
+        const float angle = 2.0F * std::acos(std::clamp(motion.Rotation[3], -1.0F, 1.0F));
+        if (trace)
+            std::fprintf(stderr, "TRIAEVUM_MODEL_MOTION seq=%llu layer=%d verts=%u key=%llx model=%08x kind=%d draws=%zu rows=%zu agree=%zu angle=%.1f pivot=%.0f,%.0f,%.0f%s\n",
+                         static_cast<unsigned long long>(current.Sequence), static_cast<int>(current.Draws[key].Composition.Layer),
+                         current.Draws[key].VertexCount,
+                         static_cast<unsigned long long>(key), current.Draws[key].Composition.NativeValue,
+                         static_cast<int>(matching.PreviousByCurrent[key]->Kind), group.Draws.size(), group.Rows.size(), count,
+                         angle * 57.2958F, motion.CurrentPivot[0], motion.CurrentPivot[1], motion.CurrentPivot[2],
+                         angle < kLinearAngle ? " linear" : "");
+        if (angle < kLinearAngle) continue;
+        motion.Snap = angle > kSnapAngle;
+        auto index = static_cast<uint32_t>(matching.Motions.size());
+        for (uint32_t other = 0; other < matching.Motions.size(); ++other) {
+            const auto& carrier = matching.Motions[other];
+            if (carrier.RigidCameraSpace != motion.RigidCameraSpace || carrier.Snap != motion.Snap ||
+                std::abs(dot(carrier.Rotation, motion.Rotation)) <= kAgree)
+                continue;
+            const auto rotation = QuaternionMatrix(carrier.Rotation);
+            float error = 0.0F, reach = 0.0F;
+            for (size_t r = 0; r < 3U; ++r) {
+                float moved = carrier.CurrentPivot[r];
+                for (size_t k = 0; k < 3U; ++k)
+                    moved += rotation[r][k] * (motion.PreviousPivot[k] - carrier.PreviousPivot[k]);
+                error += (moved - motion.CurrentPivot[r]) * (moved - motion.CurrentPivot[r]);
+                reach += (motion.PreviousPivot[r] - carrier.PreviousPivot[r]) *
+                         (motion.PreviousPivot[r] - carrier.PreviousPivot[r]);
+            }
+            // Held: within the carrier's reach, and moved as part of it (an
+            // object of its own that only turns the same way, a clock next to
+            // a clock, is not).
+            if (std::sqrt(reach) < 1.5F * carrier.Radius + 5.0F && std::sqrt(error) < 0.1F * std::sqrt(reach) + 1.5F) {
+                index = other;
+                break;
+            }
+        }
+        if (trace && index != matching.Motions.size())
+            std::fprintf(stderr, "TRIAEVUM_MODEL_MOTION carried by %u\n", index);
+        if (index == matching.Motions.size()) matching.Motions.push_back(motion);
+        for (const size_t draw : group.Draws) matching.MotionByCurrent[draw] = index;
+    }
+}
+
+// previous -> current blended with the model's motion taken out: the
+// previous pose moved onto the current one, the (small) rest blended, then
+// the motion undone for the part of it not reached yet. One transform for
+// every bone of the model, so the joints stay together.
+void BlendWithModelMotion(const Oot3dPicaVertexUniformState& previous, const Oot3dPicaVertexUniformState& current,
+                          float alpha, const ModelMotion& motion, Oot3dPicaVertexUniformState& output,
+                          const Oot3dPicaVertexUniformState& rawPrevious) {
+    alpha = std::clamp(alpha, 0.0F, 1.0F);
+    if (motion.Snap) {
+        const auto& shown = alpha < 0.5F ? previous : current;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U)
+            if (RowsMoved(rawPrevious, current, first))
+                for (size_t row = 0; row < 3U; ++row) output.Floats[first + row] = shown.Floats[first + row];
+        return;
+    }
+    auto aligned = previous;
+    MoveMatrices(QuaternionMatrix(motion.Rotation), motion.PreviousPivot, motion.CurrentPivot, aligned,
+                 rawPrevious, current);
+    for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+        if (!RowsMoved(rawPrevious, current, first)) continue;
+        for (size_t row = 0; row < 3U; ++row)
+            for (size_t column = 0; column < 4U; ++column)
+                output.Floats[first + row][column] = InterpolateFinite(
+                    aligned.Floats[first + row][column], current.Floats[first + row][column], alpha);
+    }
+    InterpolateRotatedMatrices(aligned, current, alpha, output);
+    // Undo (1 - alpha) of the motion, as a screw: the rotation around its
+    // own axis and the slide along it. Which bones measured the motion then
+    // does not matter (around their centroid it did: the in-between pose
+    // shifted from one frame to the next, the head most).
+    const float w = 1.0F - alpha;
+    const auto rotation = QuaternionMatrix(motion.Rotation);
+    std::array<float, 3> t{};  // current = rotation * previous + t
+    for (size_t r = 0; r < 3U; ++r) {
+        t[r] = motion.CurrentPivot[r];
+        for (size_t k = 0; k < 3U; ++k) t[r] -= rotation[r][k] * motion.PreviousPivot[k];
+    }
+    const float half = std::acos(std::clamp(motion.Rotation[3], -1.0F, 1.0F));
+    const float sine = std::sin(half);
+    std::array<float, 3> point{}, to{};
+    if (sine > 1.0e-4F) {
+        const std::array<float, 3> u{motion.Rotation[0] / sine, motion.Rotation[1] / sine, motion.Rotation[2] / sine};
+        const float slide = u[0] * t[0] + u[1] * t[1] + u[2] * t[2];
+        std::array<float, 3> across{};
+        for (size_t r = 0; r < 3U; ++r) across[r] = t[r] - slide * u[r];
+        const std::array<float, 3> cross{u[1] * across[2] - u[2] * across[1], u[2] * across[0] - u[0] * across[2],
+                                         u[0] * across[1] - u[1] * across[0]};
+        const float cotangent = std::cos(half) / sine;
+        for (size_t r = 0; r < 3U; ++r) {
+            point[r] = 0.5F * (across[r] + cotangent * cross[r]);
+            to[r] = point[r] - w * slide * u[r];
+        }
+    } else {
+        for (size_t r = 0; r < 3U; ++r) to[r] = -w * t[r];
+    }
+    const Quaternion back = PartialQuaternion(
+        {-motion.Rotation[0], -motion.Rotation[1], -motion.Rotation[2], motion.Rotation[3]}, w);
+    MoveMatrices(QuaternionMatrix(back), point, to, output, rawPrevious, current);
+}
+
 
 bool ApplyCameraDelta(const VisualDrawMatching& matching, float alpha,
                       Oot3dPicaVertexUniformState& uniforms) {
@@ -2219,10 +2573,8 @@ bool ApplyCameraDelta(const VisualDrawMatching& matching, float alpha,
 // (small), the camera interpolated as above.
 void ApplyRigidCameraInterpolation(const VisualDrawMatching& matching, const Oot3dPicaVertexUniformState& previous,
                                    const Oot3dPicaVertexUniformState& current, float alpha,
-                                   Oot3dPicaVertexUniformState& output) {
-    if (!matching.RigidCamera || !CameraInterpolationEnabled() || !matching.CameraDeltaValid ||
-        !UsesModelViewLayout(previous) || !UsesModelViewLayout(current))
-        return;
+                                   Oot3dPicaVertexUniformState& output, const ModelMotion* motion = nullptr) {
+    if (!RigidCameraApplies(matching, previous, current)) return;
     const auto inverse = InvertAffine(matching.CameraDelta);
     if (!inverse) return;
     alpha = std::clamp(alpha, 0.0F, 1.0F);
@@ -2239,7 +2591,10 @@ void ApplyRigidCameraInterpolation(const VisualDrawMatching& matching, const Oot
                     InterpolateFinite(moved[row][column], current.Floats[first + row][column], alpha);
         }
     }
-    InterpolateRotatedMatrices(before, current, alpha, blended);
+    if (motion != nullptr && motion->RigidCameraSpace)
+        BlendWithModelMotion(before, current, alpha, *motion, blended, previous);
+    else
+        InterpolateRotatedMatrices(before, current, alpha, blended);
     const auto camera = PartialCameraDelta(matching.CameraDelta, 1.0F - alpha);
     for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
         const auto moved = MultiplyAffine(camera, AffineAt(blended, first));
@@ -2250,7 +2605,7 @@ void ApplyRigidCameraInterpolation(const VisualDrawMatching& matching, const Oot
 void InterpolateVisualVertexUniforms(
     const Oot3dPicaVulkanDrawPlan& previous,
     const Oot3dPicaVulkanDrawPlan& current, float alpha,
-    Oot3dPicaVertexUniformState& vertexUniforms) {
+    Oot3dPicaVertexUniformState& vertexUniforms, const ModelMotion* motion = nullptr) {
     alpha = std::clamp(alpha, 0.0F, 1.0F);
     for (size_t index = 0; index < vertexUniforms.Floats.size(); ++index) {
         if (!IsContinuousVertexUniform(index)) {
@@ -2264,8 +2619,12 @@ void InterpolateVisualVertexUniforms(
     }
     if (UsesModelViewLayout(previous.VertexShader.Uniforms) &&
         UsesModelViewLayout(current.VertexShader.Uniforms)) {
-        InterpolateRotatedMatrices(previous.VertexShader.Uniforms, current.VertexShader.Uniforms, alpha,
-                                   vertexUniforms);
+        if (motion != nullptr && !motion->RigidCameraSpace)
+            BlendWithModelMotion(previous.VertexShader.Uniforms, current.VertexShader.Uniforms, alpha, *motion,
+                                 vertexUniforms, previous.VertexShader.Uniforms);
+        else
+            InterpolateRotatedMatrices(previous.VertexShader.Uniforms, current.VertexShader.Uniforms, alpha,
+                                       vertexUniforms);
     }
 }
 
@@ -2383,9 +2742,9 @@ void InterpolateCompatibleVisualRenderState(
     Oot3dPicaVertexUniformState& vertexUniforms,
     Oot3dPicaFragmentUniformState& fragmentUniforms,
     Oot3dPicaViewportState& viewport,
-    std::array<float, 4>& blendConstantColor) {
+    std::array<float, 4>& blendConstantColor, const ModelMotion* motion = nullptr) {
     InterpolateVisualVertexUniforms(previous, current, alpha,
-                                    vertexUniforms);
+                                    vertexUniforms, motion);
     InterpolateVisualFragmentUniforms(previous, current, alpha,
                                       fragmentUniforms);
     InterpolateVisualViewport(previous, current, alpha, viewport);
@@ -2394,11 +2753,12 @@ void InterpolateCompatibleVisualRenderState(
 }
 
 void InterpolateCompatibleVisualDraw(const Oot3dPicaVulkanDrawPlan& previous, const Oot3dPicaVulkanDrawPlan& current,
-                                     float alpha, Oot3dPicaVulkanDrawPlan& output) {
+                                     float alpha, Oot3dPicaVulkanDrawPlan& output,
+                                     const ModelMotion* motion = nullptr) {
     output = current;
     InterpolateCompatibleVisualRenderState(previous, current, alpha, output.VertexShader.Uniforms,
                                            output.FragmentShader.Uniforms, output.State.Viewport,
-                                           output.State.OutputMerger.Blend.ConstantColor);
+                                           output.State.OutputMerger.Blend.ConstantColor, motion);
     const bool perInstanceInterpolated = InterpolateVertexValues(
         previous, current, alpha, Oot3dPicaVertexInputRate::PerInstance,
         output.VertexBindings);
@@ -2411,6 +2771,64 @@ void InterpolateCompatibleVisualDraw(const Oot3dPicaVulkanDrawPlan& previous, co
     }
     if (perInstanceInterpolated || perVertexInterpolated) {
       output.GeometryIdentityAvailable = false;
+    }
+}
+
+// A model switches meshes from one frame to the next (Link's open hand and
+// fist): the new mesh has no previous draw and showed its final pose in
+// between, a hand hanging in the air off the turning arm. Its bones are
+// the same as the ones its paired neighbours load: those rows take the
+// neighbours' in-between pose. outputOf(index) is a paired draw's sampled
+// uniforms (nullptr: unchanged).
+template <typename OutputOf>
+void AttachUnpairedModelDraws(const Oot3dPicaVisualFrame& current, const VisualDrawMatching& matching,
+                              OutputOf outputOf,
+                              const std::function<Oot3dPicaVertexUniformState&(size_t)>& unpairedUniforms) {
+    static const bool disabled = std::getenv("TRIAEVUM_NO_UNPAIRED_ATTACH") != nullptr;
+    if (disabled) return;
+    const auto rowHash = [](uint32_t model, const Oot3dPicaVertexUniformState& u, size_t first) {
+        uint64_t hash = kFnvOffset;
+        HashValue(hash, model);
+        for (size_t row = 0; row < 3U; ++row) HashValue(hash, u.Floats[first + row]);
+        return hash;
+    };
+    std::vector<size_t> unpaired;
+    for (size_t index = 0; index < current.Draws.size(); ++index)
+        if (!matching.PreviousByCurrent[index].has_value() &&
+            current.Draws[index].Composition.Provenance == Oot3dPicaCompositionProvenance::NativeModelInstance &&
+            UsesModelViewLayout(current.Draws[index].VertexShader.Uniforms))
+            unpaired.push_back(index);
+    if (unpaired.empty()) return;
+    std::unordered_map<uint32_t, bool> wanted;
+    for (const size_t index : unpaired) wanted[current.Draws[index].Composition.NativeValue] = true;
+    std::unordered_map<uint64_t, std::pair<size_t, size_t>> sources;  // row hash -> (draw, first row)
+    for (size_t index = 0; index < current.Draws.size(); ++index) {
+        const auto& draw = current.Draws[index];
+        if (!matching.PreviousByCurrent[index].has_value() ||
+            matching.PreviousByCurrent[index]->Kind != VisualDrawMatchKind::ModelInstance ||
+            !wanted.contains(draw.Composition.NativeValue) || outputOf(index) == nullptr)
+            continue;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U)
+            sources.emplace(rowHash(draw.Composition.NativeValue, draw.VertexShader.Uniforms, first),
+                            std::make_pair(index, first));
+    }
+    if (sources.empty()) return;
+    for (const size_t index : unpaired) {
+        const auto& draw = current.Draws[index];
+        Oot3dPicaVertexUniformState* target = nullptr;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+            const auto found = sources.find(rowHash(draw.Composition.NativeValue, draw.VertexShader.Uniforms, first));
+            if (found == sources.end()) continue;
+            const auto& [sourceIndex, sourceFirst] = found->second;
+            const auto& source = current.Draws[sourceIndex].VertexShader.Uniforms;
+            bool same = true;
+            for (size_t row = 0; row < 3U; ++row)
+                same = same && source.Floats[sourceFirst + row] == draw.VertexShader.Uniforms.Floats[first + row];
+            if (!same) continue;
+            if (target == nullptr) target = &unpairedUniforms(index);
+            const auto* sampled = outputOf(sourceIndex);
+            for (size_t row = 0; row < 3U; ++row) target->Floats[first + row] = sampled->Floats[sourceFirst + row];
+        }
     }
 }
 
@@ -2437,12 +2855,13 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
             sampled = currentDraw;
         } else if (match.has_value()) {
             const auto& previousDraw = previous.Draws[match->PreviousIndex];
-            InterpolateCompatibleVisualDraw(previousDraw, currentDraw, alpha, sampled);
+            const auto* motion = matching.MotionFor(currentIndex);
+            InterpolateCompatibleVisualDraw(previousDraw, currentDraw, alpha, sampled, motion);
             if (match->Kind == VisualDrawMatchKind::GeometryOrdinal)
                 sampled.FragmentShader.Uniforms = currentDraw.FragmentShader.Uniforms;
             ApplyRigidCameraInterpolation(matching, previousDraw.VertexShader.Uniforms,
                                           currentDraw.VertexShader.Uniforms, alpha,
-                                          sampled.VertexShader.Uniforms);
+                                          sampled.VertexShader.Uniforms, motion);
             VisualDrawDeltaFlags delta;
             if (drawDeltas != nullptr) {
                 delta = (*drawDeltas)[currentIndex];
@@ -2485,6 +2904,10 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
             ApplyCameraDelta(matching, alpha, sampled.VertexShader.Uniforms);
         }
     }
+    AttachUnpairedModelDraws(
+        current, matching,
+        [&](size_t index) -> const Oot3dPicaVertexUniformState* { return &output.Draws[index].VertexShader.Uniforms; },
+        [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
     if (output.Draws.empty()) {
         return false;
     }
@@ -2534,10 +2957,24 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
         const auto& delta = drawDeltas[currentIndex];
         if (delta.VertexUniforms) {
             sampled.VertexUniforms.emplace(currentDraw.VertexShader.Uniforms);
+            const auto* motion = matching.MotionFor(currentIndex);
             InterpolateVisualVertexUniforms(
-                previousDraw, currentDraw, alpha, *sampled.VertexUniforms);
+                previousDraw, currentDraw, alpha, *sampled.VertexUniforms, motion);
             ApplyRigidCameraInterpolation(matching, previousDraw.VertexShader.Uniforms,
-                                          currentDraw.VertexShader.Uniforms, alpha, *sampled.VertexUniforms);
+                                          currentDraw.VertexShader.Uniforms, alpha, *sampled.VertexUniforms,
+                                          motion);
+            // TRIAEVUM_BONE_TRACK=<vertex count>: every sample's bone places of that draw.
+            static const long boneTrack = [] {
+                const char* value = std::getenv("TRIAEVUM_BONE_TRACK");
+                return value != nullptr ? std::strtol(value, nullptr, 10) : -1L;
+            }();
+            if (boneTrack >= 0 && currentDraw.VertexCount == static_cast<uint32_t>(boneTrack)) {
+                const auto& u = sampled.VertexUniforms.has_value() ? *sampled.VertexUniforms : currentDraw.VertexShader.Uniforms;
+                std::fprintf(stderr, "TRIAEVUM_BONES %llu %.3f", static_cast<unsigned long long>(current.Sequence), alpha);
+                for (size_t first = 20U; first + 2U < 0x59U; first += 3U)
+                    std::fprintf(stderr, " %.3f %.3f %.3f", u.Floats[first][3], u.Floats[first + 1][3], u.Floats[first + 2][3]);
+                std::fprintf(stderr, "\n");
+            }
         }
         // TRIAEVUM_INTERP_PROBE=<file>: for opaque world pairs, the sampled
         // distance from the camera against the endpoints' (1 = no pull).
@@ -2599,6 +3036,16 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
             ++output.InterpolatedPerVertexDraws;
         }
     }
+    AttachUnpairedModelDraws(
+        current, matching,
+        [&](size_t index) -> const Oot3dPicaVertexUniformState* {
+            return output.Draws[index].VertexUniforms.has_value() ? &*output.Draws[index].VertexUniforms : nullptr;
+        },
+        [&](size_t index) -> Oot3dPicaVertexUniformState& {
+            auto& sampled = output.Draws[index];
+            if (!sampled.VertexUniforms.has_value()) sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
+            return *sampled.VertexUniforms;
+        });
     // Opaque world draws the game culled as they left the view: in the previous
     // frame, gone from the current one, and their place is outside the
     // current view (the game drops what goes off screen, the in-between
