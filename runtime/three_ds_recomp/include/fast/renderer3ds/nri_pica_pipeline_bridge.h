@@ -160,6 +160,13 @@ class NriPicaPipelineBridge final {
         NriPicaPipelineId pipelineId,
         const NriPicaGraphicsPipelineDesc& desc);
     void WaitForAsyncPipelines();
+    // For a draw that must not wait a frame: a background build of this
+    // pipeline still in the queue is withdrawn (the caller builds it now);
+    // one already running is waited for and registered. True when the
+    // pipeline is registered on return.
+    bool FinishOrWithdrawAsyncPipeline(
+        NriPicaPipelineId pipelineId,
+        const NriPicaGraphicsPipelineDesc& desc);
     bool BindOwnedDraw(const NriPicaOwnedDrawDesc& desc);
     // Same layout/resources as the immediately preceding owned draw; no uploads.
     bool DrawBoundGeometry(const NriPicaOwnedDrawDesc& desc);

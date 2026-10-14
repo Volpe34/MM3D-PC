@@ -47,6 +47,10 @@ std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept;
 // meshes and calls each mesh's prebuilt command block) and its only return.
 inline constexpr uint32_t kMm3dModelDrawEntry = 0x005E9254U;
 inline constexpr uint32_t kMm3dModelDrawReturn = 0x005EAD48U;
+// Per primitive set of a mesh (r0 = model instance, r1 = the mesh's shape:
+// [0] its base, [4] the primitive sets' offsets, r2 = which set): loads the
+// set's bone matrices, before the set's draw.
+inline constexpr uint32_t kMm3dPrimitiveSetDrawEntry = 0x005E9504U;
 inline constexpr uint32_t kMm3dCommandListCursorAddress = 0x006A3A88U;
 // Graphics context; +0x9C points to the bound command list, whose buffer
 // base is at +4.
@@ -115,6 +119,9 @@ class Oot3dNativePicaCompositionTracker final
         uint32_t address,
         Oot3dPicaCompositionAttribution& attribution) const override;
 
+    std::shared_ptr<const Oot3dPicaDrawSkinning> ResolveDrawSkinning(
+        uint32_t address) const override;
+
     // Records which model instance wrote each main command-list range
     // instead of the OoT3D owners.
     void EnableMm3dModelInstances() noexcept { mMm3dModelInstances = true; }
@@ -155,7 +162,20 @@ class Oot3dNativePicaCompositionTracker final
     struct ActiveModelDraw {
         uint32_t Model = 0;
         uint32_t BeginAddress = 0;
+        // The skeleton as this draw used it (read at its first primitive set).
+        std::shared_ptr<const Oot3dPicaModelPose> Pose;
+        bool PoseRead = false;
+        // The primitive set being written: from its bone load to the next.
+        uint32_t PartBegin = 0;
+        std::shared_ptr<const Oot3dPicaDrawSkinning> Part;
     };
+    struct PartSpan {
+        uint32_t EndAddress = 0;
+        uint32_t ListBase = 0;
+        uint32_t ListSerial = 0;
+        std::shared_ptr<const Oot3dPicaDrawSkinning> Skinning;
+    };
+    void CloseMm3dPart(uint32_t end);
     static constexpr size_t MaximumModelSpans = 65536U;
     bool mMm3dModelInstances = false;
     std::optional<ActiveModelDraw> mActiveModelDraw;
@@ -167,6 +187,8 @@ class Oot3dNativePicaCompositionTracker final
     // Begin address -> range; a newer list written over an address replaces
     // the older owner.
     std::map<uint32_t, ModelSpan> mModelSpans;
+    // The same per primitive set, with its bones.
+    std::map<uint32_t, PartSpan> mPartSpans;
 
     static constexpr size_t MaximumPendingSpans = 16384U;
 

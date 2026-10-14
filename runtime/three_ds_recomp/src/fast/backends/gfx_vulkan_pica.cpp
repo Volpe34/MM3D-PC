@@ -3765,7 +3765,8 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
         nriPipeline.FragmentSpirv = shader.NriFragmentSpirv;
         nriPipeline.VertexBindings = nriBindings;
         nriPipeline.VertexAttributes = nriAttributes;
-        if (!mNriPicaPipelineBridge.CreateOwnedPipeline(
+        if (!mNriPicaPipelineBridge.FinishOrWithdrawAsyncPipeline(record.Id, nriPipeline) &&
+            !mNriPicaPipelineBridge.CreateOwnedPipeline(
                 record.Id, nriPipeline)) {
             SPDLOG_WARN(
                 "NRI PICA pipeline creation failed for shader {}:{}",
@@ -4284,6 +4285,31 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     return true;
 }
 
+namespace {
+// A draw whose shader or pipeline is not built yet: only a transparent
+// effect with no model of its own (dust, sparks, a glow) may be skipped while
+// the workers build it. Anything else is built on the spot, as upstream does:
+// skipping it made characters vanish for the build's few hundred ms the first
+// time they needed a new shader (Deku Link attacking, NPCs).
+bool ShaderBuildMaySkipDraw(const GfxNativePicaDrawView& draw) {
+    static const bool allAsync = std::getenv("TRIAEVUM_ASYNC_ALL_SHADERS") != nullptr;
+    if (allAsync) return true;
+    using Layer = Renderer3ds::PicaCompositionLayer;
+    if (draw.Composition.Provenance == Renderer3ds::PicaCompositionProvenance::NativeModelInstance) return false;
+    return draw.Composition.Layer == Layer::TransparentWorld ||
+           (draw.Composition.Layer == Layer::Unknown && draw.Blend.Enabled && draw.DepthTestEnabled &&
+            !draw.DepthWriteEnabled);
+}
+// TRIAEVUM_ASYNC_TRACE=1: each draw skipped while its shader or pipeline builds.
+void TraceSkippedDraw(const GfxNativePicaDrawView& draw, const char* what) {
+    static const bool trace = std::getenv("TRIAEVUM_ASYNC_TRACE") != nullptr;
+    if (!trace) return;
+    std::fprintf(stderr, "TRIAEVUM_ASYNC_SKIP %s layer=%u provenance=%u model=%08x blend=%d depth_write=%d\n", what,
+                 static_cast<unsigned>(draw.Composition.Layer), static_cast<unsigned>(draw.Composition.Provenance),
+                 draw.Composition.NativeValue, draw.Blend.Enabled ? 1 : 0, draw.DepthWriteEnabled ? 1 : 0);
+}
+}  // namespace
+
 bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
     const GfxNativePicaDrawView& draw, std::string* error) {
     {
@@ -4722,7 +4748,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             : mInstrumentedNativePicaShaders;
         auto shaderIt = nativeShaderCache.find(shaderKey);
         if (shaderIt == nativeShaderCache.end()) try {
-            mAsyncShaderScope = true;
+            mAsyncShaderScope = ShaderBuildMaySkipDraw(draw);
             struct ScopeReset {
                 bool& Flag;
                 ~ScopeReset() { Flag = false; }
@@ -4791,6 +4817,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             // Its target must still exist for the display transfers that read it.
             (void)GetOrCreateNativePicaRenderTarget(draw);
             ++mAsyncShaderSkippedDraws;
+            TraceSkippedDraw(draw, "shader");
             return true;
         }
         mDiagnostics.RecordNriPicaShaderContract(
@@ -5017,6 +5044,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
         }
         std::span<const uint8_t> previousVertexUniformBytes =
             draw.VertexUniformBytes;
+        // Owns the previous sample's uniforms for this draw: the history entry
+        // is replaced below, which would free the storage under the span.
+        std::vector<uint8_t> previousVertexUniformStorage;
         std::array<float, 2> previousJitterNdc{
             2.0F * jitterUv[0], 2.0F * jitterUv[1]};
         bool exactMotionHistory = false;
@@ -5027,7 +5057,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                 previous->second.FrameId + 1U == mFrameCounter &&
                 previous->second.Bytes.size() ==
                     draw.VertexUniformBytes.size()) {
-                previousVertexUniformBytes = previous->second.Bytes;
+                previousVertexUniformStorage = std::move(previous->second.Bytes);
+                previousVertexUniformBytes = previousVertexUniformStorage;
                 previousJitterNdc = previous->second.JitterNdc;
                 exactMotionHistory = true;
             }
@@ -5047,7 +5078,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
         const size_t previousPipelineCount = mNativePicaPipelines.size();
         Renderer3ds::PicaDevicePipelineRecord* pipelineRecordPointer = nullptr;
         try {
-            mAsyncShaderScope = true;
+            mAsyncShaderScope = ShaderBuildMaySkipDraw(draw);
             struct ScopeReset {
                 bool& Flag;
                 ~ScopeReset() { Flag = false; }
@@ -5059,6 +5090,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
         } catch (const Oot3d::PicaShaderPending&) {
             // The pipeline is being built in the background: skip, don't stall.
             ++mAsyncShaderSkippedDraws;
+            TraceSkippedDraw(draw, "pipeline");
             return true;
         }
         auto& pipelineRecord = *pipelineRecordPointer;

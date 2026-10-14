@@ -55,6 +55,9 @@ class NriPicaPipelineBridge final {
     Renderer3ds::NriPicaPipelineBridge::AsyncPipelineState CreateOwnedPipelineAsync(
         NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc);
     void WaitForAsyncPipelines() { mBridge.WaitForAsyncPipelines(); }
+    bool FinishOrWithdrawAsyncPipeline(NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc) {
+        return mBridge.FinishOrWithdrawAsyncPipeline(pipelineId, desc);
+    }
     bool BindOwnedDraw(const NriPicaOwnedDrawDesc& desc);
     bool DrawBoundGeometry(const NriPicaOwnedDrawDesc& desc);
     bool Bind(uint32_t frameIndex, VkPipeline pipeline);

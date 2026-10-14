@@ -157,6 +157,27 @@ struct Oot3dPicaCompositionAttribution {
     bool operator==(const Oot3dPicaCompositionAttribution&) const = default;
 };
 
+// One draw of an MM3D model instance as the game's skeleton made it: every
+// bone's matrix (model-view, the bone's own space: its origin is the joint
+// to its parent) and the parents, read when the model drew. A draw's bone
+// palette entry k is Pose.Bones[Bones[k]] * (inverse bind, smooth skinning
+// only) * translate(Offset).
+struct Oot3dPicaModelPose {
+    using Matrix = std::array<std::array<float, 4>, 3>;
+    uint32_t Model = 0;
+    uint32_t Skeleton = 0;  // the model's skeleton data ("skl " chunk)
+    std::vector<int16_t> Parents;  // -1: a root
+    std::vector<Matrix> Bones;
+    std::vector<Matrix> InverseBinds;
+};
+
+struct Oot3dPicaDrawSkinning {
+    std::shared_ptr<const Oot3dPicaModelPose> Pose;
+    std::vector<int16_t> Bones;  // palette entry -> bone
+    bool InverseBind = false;
+    std::array<float, 3> Offset{};
+};
+
 // Absolute guest-memory byte range emitted by one demonstrated native pass.
 // The end is exclusive. Ranges are attached to exactly one subsequent GSP
 // command-list submission and never inferred from the resulting PICA state.
@@ -178,6 +199,11 @@ class Oot3dPicaCommandListCompositionProvider {
     virtual bool ResolveCommandAddress(
         uint32_t, Oot3dPicaCompositionAttribution&) const {
         return false;
+    }
+    // The bones of the model draw recorded at that call site, if known.
+    virtual std::shared_ptr<const Oot3dPicaDrawSkinning> ResolveDrawSkinning(
+        uint32_t) const {
+        return nullptr;
     }
 };
 
@@ -296,6 +322,7 @@ struct Oot3dPicaDrawPacket {
     Oot3dPicaProcTexLutState ProcTexLuts;
     std::shared_ptr<const Oot3dPicaLightingLutState> LightingLuts;
     std::array<std::array<float, 4>, 16> DefaultAttributes{};
+    std::shared_ptr<const Oot3dPicaDrawSkinning> Skinning;
 };
 
 class Oot3dPicaPacketSink {

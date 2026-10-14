@@ -7250,6 +7250,20 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       latestVisualTransitionContinuous = false;
                     }
                     latestVisualFrame = std::move(currentVisualFrame);
+                    // TRIAEVUM_INTERP_EVAL=<file>: each in-between measured
+                    // against the real game frame it skips (see the function).
+                    static std::FILE* interpolationEval = [] {
+                      const char* path = std::getenv("TRIAEVUM_INTERP_EVAL");
+                      return path != nullptr ? std::fopen(path, "w") : nullptr;
+                    }();
+                    if (interpolationEval != nullptr && olderVisualFrame.has_value() &&
+                        previousVisualFrame.has_value() &&
+                        olderVisualFrame->Sequence + 1U == previousVisualFrame->Sequence &&
+                        previousVisualFrame->Sequence + 1U == latestVisualFrame->Sequence) {
+                      Oot3dNativeGame::EvaluateOot3dPicaVisualInterpolation(
+                          *olderVisualFrame, *previousVisualFrame, *latestVisualFrame, interpolationEval);
+                      std::fflush(interpolationEval);
+                    }
                   }
                 }
               }

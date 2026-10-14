@@ -306,6 +306,7 @@ bool BuildOot3dPicaVulkanDrawPlanImpl(
     plan.CommandListOffsetWords = submission.Packet.CommandListOffsetWords;
     plan.CompositionDomain = submission.Packet.CompositionDomain;
     plan.Composition = submission.Packet.Composition;
+    plan.Skinning = submission.Packet.Skinning;
     // Titles without layer tagging (MM3D): a scene draw that tests and writes
     // depth without blending is solid world, the rest transparent world, so
     // mid-scene effects (grass, AO) get their anchors.

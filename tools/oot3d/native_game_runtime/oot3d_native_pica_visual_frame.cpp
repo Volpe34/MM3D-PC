@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <utility>
 
@@ -689,6 +690,44 @@ struct ModelMotion {
     bool Snap = false;
 };
 
+// One bone of a model skeleton between two frames, in its parent's space
+// (the joint stays where the parent's in-between pose puts it).
+struct PoseBone {
+    int16_t Parent = -1;  // -1: interpolated on its own (a root)
+    bool Decomposed = false;
+    std::array<float, 4> Rotation0{}, Rotation1{};  // x y z w, same hemisphere
+    std::array<std::array<float, 3>, 3> Shape0{}, Shape1{};  // scale and shear
+    std::array<float, 3> Translation0{}, Translation1{};
+    std::array<std::array<float, 4>, 3> Local0{}, Local1{};  // blended linearly when not decomposed
+    // Its orientation (and scale) in the view: blended there, the joint
+    // placed by the parent.
+    uint16_t Root = 0;  // the ancestor its sharp turn is blended against
+    bool WorldDecomposed = false;
+    bool SharpTurn = false;  // turned far in its parent's space in one game frame
+    std::array<float, 4> WorldRotation0{}, WorldRotation1{};
+    std::array<std::array<float, 3>, 3> WorldShape0{}, WorldShape1{};
+};
+
+// A model's skeleton in both frames (MM3D: the game's own bones and parents).
+struct PoseTransition {
+    const Oot3dPicaModelPose* Previous = nullptr;
+    const Oot3dPicaModelPose* Current = nullptr;
+    std::vector<PoseBone> Bones;
+    std::vector<uint16_t> Order;  // parents before children
+    // The previous bones as the snap shows them: from the current view on
+    // the rigid camera path, otherwise as drawn.
+    std::vector<std::array<std::array<float, 4>, 3>> PreviousBones;
+    bool RigidCameraSpace = false;
+    bool Snap = false;
+    bool Moving = false;
+    // Held by another model's bone (an item in a hand, its own model placed
+    // from the hand each frame): the root bones follow that bone.
+    uint32_t Carrier = std::numeric_limits<uint32_t>::max();
+    uint16_t CarrierBone = 0;
+    // root, its place on the bone in each frame
+    std::vector<std::pair<uint16_t, std::array<std::array<std::array<float, 4>, 3>, 2>>> HeldRoots;
+};
+
 struct VisualDrawMatch {
     size_t PreviousIndex = 0;
     VisualDrawMatchKind Kind = VisualDrawMatchKind::StrictUnique;
@@ -720,6 +759,19 @@ struct VisualDrawMatching {
     size_t UnmatchedCurrent = 0;
     std::vector<ModelMotion> Motions;
     std::vector<uint32_t> MotionByCurrent;  // index into Motions, or none
+    std::vector<PoseTransition> Poses;
+    std::vector<uint32_t> PoseOrder;  // carriers before what they hold
+    std::vector<uint32_t> PoseByCurrent;  // index into Poses, or none
+    // A model's parts (meshes) drawn in one frame only (the game switched
+    // them): shown with the nearer frame.
+    struct VanishedPart {
+        size_t PreviousIndex = 0;
+        uint32_t Pose = 0;
+        size_t After = 0;  // drawn after this current draw
+    };
+    std::vector<bool> PoseAppeared;    // per current draw: new part, hidden before alpha 0.5
+    std::vector<VanishedPart> PoseVanished;  // previous parts gone, drawn before alpha 0.5
+    std::vector<bool> PreviousInPose;  // per previous draw: a part of a paired model
 
     const ModelMotion* MotionFor(size_t currentIndex) const {
         if (currentIndex >= MotionByCurrent.size() || MotionByCurrent[currentIndex] >= Motions.size()) return nullptr;
@@ -1119,6 +1171,8 @@ void MatchModelInstances(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVi
 
 void ComputeModelMotions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
                          VisualDrawMatching& matching);
+void ComputePoseTransitions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
+                            VisualDrawMatching& matching);
 
 VisualDrawMatching BuildVisualDrawMatching(
     const Oot3dPicaVisualFrame& previous,
@@ -1905,6 +1959,20 @@ VisualDrawMatching BuildVisualDrawMatching(
                      current.Draws.size(), matching.CameraDeltaValid ? 1 : 0);
     }
     ComputeModelMotions(previous, current, matching);
+    {
+        // TRIAEVUM_POSE_TIMING: average cost of the skeleton preparation.
+        static const bool timing = std::getenv("TRIAEVUM_POSE_TIMING") != nullptr;
+        const auto start = std::chrono::steady_clock::now();
+        ComputePoseTransitions(previous, current, matching);
+        if (timing) {
+            static double total = 0.0;
+            static uint64_t calls = 0;
+            total += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+            if (++calls % 300U == 0U)
+                std::fprintf(stderr, "TRIAEVUM_POSE_TIMING prepare=%.1fus poses=%zu\n", total / static_cast<double>(calls),
+                             matching.Poses.size());
+        }
+    }
     return matching;
 }
 
@@ -2539,6 +2607,623 @@ void BlendWithModelMotion(const Oot3dPicaVertexUniformState& previous, const Oot
     MoveMatrices(QuaternionMatrix(back), point, to, output, rawPrevious, current);
 }
 
+// --- Model skeletons (MM3D) ---
+//
+// Every bone matrix of a skinned model blended on its own (even as a
+// rotation) tore it at the joints in the in-between frames: a forearm
+// turning fast slid off the elbow, a hand off the wrist. The game's own
+// skeleton is known for MM3D models (the bones each draw loads, their
+// parents): each bone is blended in its parent's space and placed on the
+// parent's in-between pose, as the animation itself is built, so the
+// joints stay together however fast the limbs turn.
+
+struct AffineParts {
+    Quaternion Rotation{};
+    std::array<std::array<float, 3>, 3> Shape{};  // R^T * M: scale and shear
+    std::array<float, 3> Translation{};
+};
+
+// M = R * Shape (Gram-Schmidt on the columns), R a proper rotation.
+std::optional<AffineParts> DecomposeAffine(const Affine34& m) {
+    std::array<std::array<float, 3>, 3> column{};
+    const auto length = [](const std::array<float, 3>& v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+    const auto dot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+    float largest = 0.0F;
+    for (size_t c = 0; c < 3U; ++c) {
+        for (size_t r = 0; r < 3U; ++r) column[c][r] = m[r][c];
+        largest = std::max(largest, length(column[c]));
+    }
+    if (!std::isfinite(largest) || !(largest > 1.0e-20F)) return std::nullopt;
+    std::array<std::array<float, 3>, 3> axis{};  // axis[c] = column c of R
+    axis[0] = column[0];
+    const float l0 = length(axis[0]);
+    if (!(l0 > 1.0e-5F * largest)) return std::nullopt;
+    for (float& v : axis[0]) v /= l0;
+    const float d = dot(column[1], axis[0]);
+    for (size_t r = 0; r < 3U; ++r) axis[1][r] = column[1][r] - d * axis[0][r];
+    const float l1 = length(axis[1]);
+    if (!(l1 > 1.0e-5F * largest)) return std::nullopt;
+    for (float& v : axis[1]) v /= l1;
+    axis[2] = {axis[0][1] * axis[1][2] - axis[0][2] * axis[1][1], axis[0][2] * axis[1][0] - axis[0][0] * axis[1][2],
+               axis[0][0] * axis[1][1] - axis[0][1] * axis[1][0]};
+    AffineParts parts;
+    for (size_t i = 0; i < 3U; ++i)
+        for (size_t j = 0; j < 3U; ++j) parts.Shape[i][j] = dot(axis[i], column[j]);
+    const float r00 = axis[0][0], r11 = axis[1][1], r22 = axis[2][2];
+    const float trace = r00 + r11 + r22;
+    auto& q = parts.Rotation;
+    if (trace > 0.0F) {
+        const float t = std::sqrt(trace + 1.0F) * 2.0F;
+        q = {(axis[1][2] - axis[2][1]) / t, (axis[2][0] - axis[0][2]) / t, (axis[0][1] - axis[1][0]) / t, 0.25F * t};
+    } else if (r00 > r11 && r00 > r22) {
+        const float t = std::sqrt(1.0F + r00 - r11 - r22) * 2.0F;
+        q = {0.25F * t, (axis[1][0] + axis[0][1]) / t, (axis[2][0] + axis[0][2]) / t, (axis[1][2] - axis[2][1]) / t};
+    } else if (r11 > r22) {
+        const float t = std::sqrt(1.0F + r11 - r00 - r22) * 2.0F;
+        q = {(axis[1][0] + axis[0][1]) / t, 0.25F * t, (axis[2][1] + axis[1][2]) / t, (axis[2][0] - axis[0][2]) / t};
+    } else {
+        const float t = std::sqrt(1.0F + r22 - r00 - r11) * 2.0F;
+        q = {(axis[2][0] + axis[0][2]) / t, (axis[2][1] + axis[1][2]) / t, 0.25F * t, (axis[0][1] - axis[1][0]) / t};
+    }
+    const float norm = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (!std::isfinite(norm) || !(norm > 1.0e-6F)) return std::nullopt;
+    for (float& v : q) v /= norm;
+    parts.Translation = {m[0][3], m[1][3], m[2][3]};
+    return parts;
+}
+
+Quaternion SlerpQuaternion(const Quaternion& a, const Quaternion& b, float t) {
+    const float cosine = std::clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], -1.0F, 1.0F);
+    Quaternion q{};
+    if (cosine > 0.9995F) {
+        for (size_t i = 0; i < 4U; ++i) q[i] = a[i] + (b[i] - a[i]) * t;
+    } else {
+        const float angle = std::acos(cosine), sine = std::sin(angle);
+        const float wa = std::sin((1.0F - t) * angle) / sine, wb = std::sin(t * angle) / sine;
+        for (size_t i = 0; i < 4U; ++i) q[i] = a[i] * wa + b[i] * wb;
+    }
+    const float norm = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (!(norm > 1.0e-6F)) return b;
+    for (float& v : q) v /= norm;
+    return q;
+}
+
+// A draw's palette entry: the bone, its inverse bind (smooth skinning) and
+// the shape's position offset, as the game builds it.
+Affine34 SkinnedPaletteMatrix(const Oot3dPicaDrawSkinning& skinning, size_t entry, const Affine34& bone) {
+    const auto index = static_cast<size_t>(skinning.Bones[entry]);
+    Affine34 m = skinning.InverseBind ? MultiplyAffine(bone, skinning.Pose->InverseBinds[index]) : bone;
+    const auto& o = skinning.Offset;
+    if (o[0] != 0.0F || o[1] != 0.0F || o[2] != 0.0F)
+        for (size_t r = 0; r < 3U; ++r) m[r][3] += m[r][0] * o[0] + m[r][1] * o[1] + m[r][2] * o[2];
+    return m;
+}
+
+// The draw's bone rows are what its pose says (else its bones are not the
+// recorded ones: left to the per-draw blending).
+bool SkinningMatchesUniforms(const Oot3dPicaDrawSkinning& skinning, const Oot3dPicaVertexUniformState& uniforms) {
+    if (skinning.Pose == nullptr || skinning.Bones.empty() || 20U + 3U * skinning.Bones.size() > 0x59U) return false;
+    for (size_t entry = 0; entry < skinning.Bones.size(); ++entry) {
+        const auto index = static_cast<size_t>(skinning.Bones[entry]);
+        if (index >= skinning.Pose->Bones.size() || index >= skinning.Pose->InverseBinds.size()) return false;
+        const auto expected = SkinnedPaletteMatrix(skinning, entry, skinning.Pose->Bones[index]);
+        for (size_t r = 0; r < 3U; ++r)
+            for (size_t c = 0; c < 4U; ++c) {
+                const float actual = uniforms.Floats[20U + 3U * entry + r][c];
+                if (!(std::abs(actual - expected[r][c]) <= 1.0e-3F + 1.0e-4F * std::abs(actual))) return false;
+            }
+    }
+    return true;
+}
+
+// TRIAEVUM_POSE_TRACE: the frame pair being built (0: not traced).
+thread_local uint64_t gPoseTraceSequence = 0;
+
+bool BuildPoseTransition(const Oot3dPicaModelPose& previous, const Oot3dPicaModelPose& current,
+                         const Affine34* inverseCamera, PoseTransition& transition) {
+    constexpr float kSnapAngle = 1.75F;   // radians (100 degrees): the game snaps, so do we
+    constexpr float kJump = 300.0F;       // a root moving further in one game frame was placed anew
+    const size_t count = current.Bones.size();
+    if (count == 0U || previous.Bones.size() != count || current.Parents.size() != count ||
+        previous.Parents != current.Parents)
+        return false;
+    transition.Previous = &previous;
+    transition.Current = &current;
+    transition.RigidCameraSpace = inverseCamera != nullptr;
+    transition.Moving = transition.RigidCameraSpace;
+    transition.PreviousBones.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        transition.PreviousBones[i] =
+            inverseCamera != nullptr ? MultiplyAffine(*inverseCamera, previous.Bones[i]) : previous.Bones[i];
+        if (previous.Bones[i] != current.Bones[i]) transition.Moving = true;
+    }
+    // Parents first: by depth (a parent chain longer than the bones is a loop).
+    std::vector<uint16_t> depth(count, 0U);
+    for (size_t i = 0; i < count; ++i) {
+        size_t steps = 0;
+        for (int parent = current.Parents[i]; parent >= 0; parent = current.Parents[static_cast<size_t>(parent)])
+            if (static_cast<size_t>(parent) >= count || ++steps > count) return false;
+        depth[i] = static_cast<uint16_t>(steps);
+    }
+    transition.Order.resize(count);
+    for (size_t i = 0; i < count; ++i) transition.Order[i] = static_cast<uint16_t>(i);
+    std::stable_sort(transition.Order.begin(), transition.Order.end(),
+                     [&](uint16_t a, uint16_t b) { return depth[a] < depth[b]; });
+    transition.Bones.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        auto& bone = transition.Bones[i];
+        Affine34 local0 = transition.PreviousBones[i], local1 = current.Bones[i];
+        const int parent = current.Parents[i];
+        if (parent >= 0) {
+            const auto inverse0 = InvertAffine(transition.PreviousBones[static_cast<size_t>(parent)]);
+            const auto inverse1 = InvertAffine(current.Bones[static_cast<size_t>(parent)]);
+            // A parent scaled to nothing (a hidden part) has no space: the
+            // bone is blended on its own.
+            if (inverse0 && inverse1) {
+                local0 = MultiplyAffine(*inverse0, transition.PreviousBones[i]);
+                local1 = MultiplyAffine(*inverse1, current.Bones[i]);
+                bone.Parent = static_cast<int16_t>(parent);
+            }
+        }
+        bone.Local0 = local0;
+        bone.Local1 = local1;
+        const auto parts0 = DecomposeAffine(local0), parts1 = DecomposeAffine(local1);
+        // A mirrored side on one frame only cannot turn into the other.
+        if (parts0 && parts1 && (parts0->Shape[2][2] < 0.0F) == (parts1->Shape[2][2] < 0.0F)) {
+            bone.Decomposed = true;
+            bone.Rotation0 = parts0->Rotation;
+            bone.Rotation1 = parts1->Rotation;
+            const float cosine = bone.Rotation0[0] * bone.Rotation1[0] + bone.Rotation0[1] * bone.Rotation1[1] +
+                                 bone.Rotation0[2] * bone.Rotation1[2] + bone.Rotation0[3] * bone.Rotation1[3];
+            if (cosine < 0.0F)
+                for (float& v : bone.Rotation1) v = -v;
+            bone.Shape0 = parts0->Shape;
+            bone.Shape1 = parts1->Shape;
+            bone.Translation0 = parts0->Translation;
+            bone.Translation1 = parts1->Translation;
+            const float turned = 2.0F * std::acos(std::min(std::abs(cosine), 1.0F));
+            static const float sharpAngle = [] {
+                const char* value = std::getenv("TRIAEVUM_POSE_SHARP_DEGREES");
+                return (value != nullptr ? std::strtof(value, nullptr) : 60.0F) * 0.0174533F;
+            }();
+            bone.SharpTurn = turned > sharpAngle;
+            if (gPoseTraceSequence != 0U && bone.Parent >= 0 && turned > 1.6F)
+                std::fprintf(stderr, "TRIAEVUM_POSE_LOCAL seq=%llu model=%08x bones=%zu bone=%zu parent=%d angle=%.1f\n",
+                             static_cast<unsigned long long>(gPoseTraceSequence), current.Model, count, i, bone.Parent,
+                             turned * 57.2958F);
+        }
+        if (bone.Parent >= 0) {
+            // A sharp turn against the parent: blended against the ancestor
+            // it turned least against (the forearm and hand turning far
+            // opposite ways: the arm's shoulder; Link rolling: the parent),
+            // where a halfway turn is least ambiguous.
+            std::optional<AffineParts> world0, world1;
+            float least = 4.0F;
+            for (int ancestor = bone.Parent; ancestor >= 0; ancestor = transition.Bones[static_cast<size_t>(ancestor)].Parent) {
+                const auto a = static_cast<size_t>(ancestor);
+                const auto inverse0 = InvertAffine(transition.PreviousBones[a]);
+                const auto inverse1 = InvertAffine(current.Bones[a]);
+                if (!inverse0 || !inverse1) break;
+                auto relative0 = DecomposeAffine(MultiplyAffine(*inverse0, transition.PreviousBones[i]));
+                auto relative1 = DecomposeAffine(MultiplyAffine(*inverse1, current.Bones[i]));
+                if (!relative0 || !relative1) break;
+                const auto& q0 = relative0->Rotation;
+                const auto& q1 = relative1->Rotation;
+                const float angle = 2.0F * std::acos(std::min(std::abs(q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3]), 1.0F));
+                if (angle < least - 1.0e-3F) {
+                    least = angle;
+                    bone.Root = static_cast<uint16_t>(a);
+                    world0 = std::move(relative0);
+                    world1 = std::move(relative1);
+                }
+                if (transition.Bones[a].Parent < 0) break;
+            }
+            if (world0 && world1 && (world0->Shape[2][2] < 0.0F) == (world1->Shape[2][2] < 0.0F)) {
+                bone.WorldDecomposed = true;
+                bone.WorldRotation0 = world0->Rotation;
+                bone.WorldRotation1 = world1->Rotation;
+                const float c = bone.WorldRotation0[0] * bone.WorldRotation1[0] + bone.WorldRotation0[1] * bone.WorldRotation1[1] +
+                                bone.WorldRotation0[2] * bone.WorldRotation1[2] + bone.WorldRotation0[3] * bone.WorldRotation1[3];
+                if (c < 0.0F)
+                    for (float& v : bone.WorldRotation1) v = -v;
+                bone.WorldShape0 = world0->Shape;
+                bone.WorldShape1 = world1->Shape;
+            }
+        }
+        if (current.Parents[i] >= 0 || !transition.Moving) continue;
+        // A root that turned past what any animation does in one game frame
+        // (Link reversing) or jumped: the whole model snaps, as in the game.
+        float angle = 0.0F;
+        if (bone.Decomposed) {
+            const float cosine = std::abs(bone.Rotation0[0] * bone.Rotation1[0] + bone.Rotation0[1] * bone.Rotation1[1] +
+                                          bone.Rotation0[2] * bone.Rotation1[2] + bone.Rotation0[3] * bone.Rotation1[3]);
+            angle = 2.0F * std::acos(std::min(cosine, 1.0F));
+            if (angle > kSnapAngle) transition.Snap = true;
+        }
+        float squared = 0.0F;
+        for (size_t r = 0; r < 3U; ++r)
+            squared += (local1[r][3] - local0[r][3]) * (local1[r][3] - local0[r][3]);
+        if (!(squared <= kJump * kJump)) transition.Snap = true;
+        if (gPoseTraceSequence != 0U && (angle > 1.0F || squared > 30.0F * 30.0F))
+            std::fprintf(stderr, "TRIAEVUM_POSE_ROOT seq=%llu model=%08x bones=%zu angle=%.1f move=%.1f%s\n",
+                         static_cast<unsigned long long>(gPoseTraceSequence), current.Model, count, angle * 57.2958F,
+                         std::sqrt(squared), transition.Snap ? " snap" : "");
+    }
+    return true;
+}
+
+// A frame's poses by (model, n-th draw of that model in the frame).
+std::unordered_map<uint64_t, const Oot3dPicaModelPose*> CollectFramePoses(const Oot3dPicaVisualFrame& frame) {
+    std::unordered_map<uint64_t, const Oot3dPicaModelPose*> poses;
+    std::unordered_map<uint32_t, uint32_t> occurrences;
+    std::unordered_set<const Oot3dPicaModelPose*> seen;
+    for (const auto& draw : frame.Draws) {
+        if (draw.Skinning == nullptr || draw.Skinning->Pose == nullptr) continue;
+        const auto* pose = draw.Skinning->Pose.get();
+        if (!seen.insert(pose).second) continue;
+        const uint32_t occurrence = occurrences[pose->Model]++;
+        poses.emplace((static_cast<uint64_t>(pose->Model) << 32U) | occurrence, pose);
+    }
+    return poses;
+}
+
+void ComputePoseTransitions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
+                            VisualDrawMatching& matching) {
+    static const bool disabled = std::getenv("TRIAEVUM_NO_POSE_INTERPOLATION") != nullptr;
+    static const bool trace = std::getenv("TRIAEVUM_POSE_TRACE") != nullptr;
+    matching.Poses.clear();
+    matching.PoseByCurrent.assign(current.Draws.size(), std::numeric_limits<uint32_t>::max());
+    if (disabled || matching.CameraCut) return;
+    const auto previousPoses = CollectFramePoses(previous);
+    const auto currentPoses = CollectFramePoses(current);
+    if (currentPoses.empty() || previousPoses.empty()) return;
+    std::optional<Affine34> inverseCamera;
+    if (matching.RigidCamera && matching.CameraDeltaValid && CameraInterpolationEnabled())
+        inverseCamera = InvertAffine(matching.CameraDelta);
+    gPoseTraceSequence = trace && current.Sequence == previous.Sequence + 1U ? current.Sequence : 0U;
+    std::unordered_map<const Oot3dPicaModelPose*, uint32_t> indexByPose;
+    for (const auto& [key, currentPose] : currentPoses) {
+        const auto found = previousPoses.find(key);
+        if (found == previousPoses.end() || found->second->Skeleton != currentPose->Skeleton) continue;
+        PoseTransition transition;
+        if (!BuildPoseTransition(*found->second, *currentPose, inverseCamera ? &*inverseCamera : nullptr, transition))
+            continue;
+        indexByPose.emplace(currentPose, static_cast<uint32_t>(matching.Poses.size()));
+        matching.Poses.push_back(std::move(transition));
+    }
+    gPoseTraceSequence = 0U;
+    // Carriers before what they may hold: more bones first.
+    auto& poses = matching.Poses;
+    matching.PoseOrder.resize(poses.size());
+    for (uint32_t i = 0; i < poses.size(); ++i) matching.PoseOrder[i] = i;
+    std::stable_sort(matching.PoseOrder.begin(), matching.PoseOrder.end(), [&](uint32_t a, uint32_t b) {
+        return poses[a].Bones.size() > poses[b].Bones.size();
+    });
+    std::vector<uint32_t> rank(poses.size(), 0U);
+    for (uint32_t k = 0; k < matching.PoseOrder.size(); ++k) rank[matching.PoseOrder[k]] = k;
+    // A model whose roots kept their place on another model's (moving) bone
+    // from one frame to the next is held by it.
+    static const bool noCarriers = std::getenv("TRIAEVUM_NO_POSE_CARRIERS") != nullptr;
+    if (!noCarriers) {
+        const auto moved = [](const Affine34& a, const Affine34& b) {
+            for (size_t r = 0; r < 3U; ++r) {
+                for (size_t c = 0; c < 3U; ++c)
+                    if (std::abs(a[r][c] - b[r][c]) > 1.0e-3F * (std::abs(b[r][c]) + 1.0e-3F)) return true;
+                if (std::abs(a[r][3] - b[r][3]) > 0.05F) return true;
+            }
+            return false;
+        };
+        // Inverses of every moving bone, once.
+        std::vector<std::vector<std::optional<std::pair<Affine34, Affine34>>>> inverses(poses.size());
+        for (size_t u = 0; u < poses.size(); ++u) {
+            const auto& carrier = poses[u];
+            inverses[u].resize(carrier.Bones.size());
+            if (!carrier.Moving || carrier.Snap) continue;
+            for (size_t b = 0; b < carrier.Bones.size(); ++b) {
+                if (!moved(carrier.PreviousBones[b], carrier.Current->Bones[b])) continue;
+                const auto i0 = InvertAffine(carrier.PreviousBones[b]);
+                const auto i1 = InvertAffine(carrier.Current->Bones[b]);
+                if (i0 && i1) inverses[u][b] = std::make_pair(*i0, *i1);
+            }
+        }
+        for (size_t t = 0; t < poses.size(); ++t) {
+            auto& held = poses[t];
+            if (!held.Moving) continue;
+            std::vector<uint16_t> roots;
+            for (size_t r = 0; r < held.Bones.size(); ++r)
+                if (held.Current->Parents[r] < 0) roots.push_back(static_cast<uint16_t>(r));
+            if (roots.empty() || !moved(held.PreviousBones[roots[0]], held.Current->Bones[roots[0]])) continue;
+            float bestDistance = 100.0F;  // within reach of the holding bone
+            for (size_t u = 0; u < poses.size(); ++u) {
+                if (u == t || rank[u] >= rank[t]) continue;
+                const auto& carrier = poses[u];
+                for (size_t b = 0; b < carrier.Bones.size(); ++b) {
+                    if (!inverses[u][b]) continue;
+                    const auto& bone = carrier.Current->Bones[b];
+                    const auto& root = held.Current->Bones[roots[0]];
+                    const float distance = std::sqrt((bone[0][3] - root[0][3]) * (bone[0][3] - root[0][3]) +
+                                                     (bone[1][3] - root[1][3]) * (bone[1][3] - root[1][3]) +
+                                                     (bone[2][3] - root[2][3]) * (bone[2][3] - root[2][3]));
+                    if (!(distance < bestDistance)) continue;
+                    bool kept = true;
+                    std::vector<std::pair<uint16_t, std::array<Affine34, 2>>> places;
+                    for (const uint16_t r : roots) {
+                        const auto place0 = MultiplyAffine(inverses[u][b]->first, held.PreviousBones[r]);
+                        const auto place1 = MultiplyAffine(inverses[u][b]->second, held.Current->Bones[r]);
+                        float scale = 0.0F;
+                        for (size_t row = 0; row < 3U; ++row)
+                            for (size_t c = 0; c < 3U; ++c) scale = std::max(scale, std::abs(place1[row][c]));
+                        for (size_t row = 0; row < 3U && kept; ++row)
+                            for (size_t c = 0; c < 4U && kept; ++c)
+                                kept = std::abs(place0[row][c] - place1[row][c]) <=
+                                       2.0e-3F * (c == 3U ? std::abs(place1[row][c]) + 1.0F : scale);
+                        if (!kept) break;
+                        places.emplace_back(r, std::array<Affine34, 2>{place0, place1});
+                    }
+                    if (!kept) continue;
+                    bestDistance = distance;
+                    held.Carrier = static_cast<uint32_t>(u);
+                    held.CarrierBone = static_cast<uint16_t>(b);
+                    held.HeldRoots = std::move(places);
+                }
+            }
+            if (trace && held.Carrier < poses.size())
+                std::fprintf(stderr, "TRIAEVUM_POSE_CARRIED seq=%llu model=%08x bones=%zu by=%08x bone=%u distance=%.1f\n",
+                             static_cast<unsigned long long>(current.Sequence), held.Current->Model, held.Bones.size(),
+                             poses[held.Carrier].Current->Model, held.CarrierBone, bestDistance);
+        }
+    }
+    size_t mismatched = 0;
+    for (size_t index = 0; index < current.Draws.size(); ++index) {
+        const auto& draw = current.Draws[index];
+        if (draw.Skinning == nullptr || draw.Skinning->Pose == nullptr) continue;
+        const auto found = indexByPose.find(draw.Skinning->Pose.get());
+        if (found == indexByPose.end() || !UsesModelViewLayout(draw.VertexShader.Uniforms)) continue;
+        if (!SkinningMatchesUniforms(*draw.Skinning, draw.VertexShader.Uniforms)) {
+            ++mismatched;
+            continue;
+        }
+        matching.PoseByCurrent[index] = found->second;
+    }
+    // Parts by geometry and bones; one in a frame only was switched by the
+    // game (Link's shield from his back into his hand: the same mesh on
+    // another bone, or the open hand for the fist).
+    static const bool noPartSwitch = std::getenv("TRIAEVUM_NO_PART_SWITCH") != nullptr;
+    matching.PoseAppeared.assign(current.Draws.size(), false);
+    matching.PreviousInPose.assign(previous.Draws.size(), false);
+    matching.PoseVanished.clear();
+    if (!noPartSwitch) {
+        const auto partKey = [](const Oot3dPicaVulkanDrawPlan& draw) {
+            // The mesh by where its data is (cheap: no content hashing).
+            uint64_t hash = kFnvOffset;
+            HashValue(hash, draw.IndexPhysicalAddress);
+            HashValue(hash, draw.Indexed);
+            HashValue(hash, draw.BaseVertex);
+            HashValue(hash, draw.VertexCount);
+            HashValue(hash, draw.VertexShader.StateKey);
+            for (const auto& binding : draw.VertexBindings) {
+                HashValue(hash, binding.Binding);
+                HashValue(hash, binding.ByteStride);
+                HashValue(hash, binding.ResolvedBytes().size());
+            }
+            for (const auto& texture : draw.Textures) HashValue(hash, texture.State.PhysicalAddress);
+            HashValue(hash, draw.Skinning->InverseBind);
+            for (const int16_t bone : draw.Skinning->Bones) HashValue(hash, bone);
+            for (const float offset : draw.Skinning->Offset) HashValue(hash, offset);
+            return hash;
+        };
+        std::unordered_map<const Oot3dPicaModelPose*, uint32_t> transitionByPrevious;
+        for (uint32_t t = 0; t < matching.Poses.size(); ++t) transitionByPrevious.emplace(matching.Poses[t].Previous, t);
+        std::vector<std::unordered_map<uint64_t, std::vector<size_t>>> previousParts(matching.Poses.size());
+        for (size_t index = 0; index < previous.Draws.size(); ++index) {
+            const auto& draw = previous.Draws[index];
+            if (draw.Skinning == nullptr || draw.Skinning->Pose == nullptr) continue;
+            const auto found = transitionByPrevious.find(draw.Skinning->Pose.get());
+            if (found == transitionByPrevious.end() || !UsesModelViewLayout(draw.VertexShader.Uniforms) ||
+                !SkinningMatchesUniforms(*draw.Skinning, draw.VertexShader.Uniforms))
+                continue;
+            matching.PreviousInPose[index] = true;
+            previousParts[found->second][partKey(draw)].push_back(index);
+        }
+        constexpr size_t kNone = std::numeric_limits<size_t>::max();
+        std::vector<size_t> lastOfPose(matching.Poses.size(), kNone);
+        for (size_t index = 0; index < current.Draws.size(); ++index) {
+            const uint32_t pose = matching.PoseByCurrent[index];
+            if (pose >= matching.Poses.size()) continue;
+            lastOfPose[pose] = index;
+            auto& parts = previousParts[pose];
+            const auto found = parts.find(partKey(current.Draws[index]));
+            if (found == parts.end() || found->second.empty()) {
+                matching.PoseAppeared[index] = true;
+            } else {
+                found->second.erase(found->second.begin());
+            }
+        }
+        for (uint32_t pose = 0; pose < matching.Poses.size(); ++pose)
+            for (const auto& [key, left] : previousParts[pose])
+                for (const size_t index : left)
+                    if (lastOfPose[pose] != kNone) matching.PoseVanished.push_back({index, pose, lastOfPose[pose]});
+        std::sort(matching.PoseVanished.begin(), matching.PoseVanished.end(),
+                  [](const auto& a, const auto& b) { return a.PreviousIndex < b.PreviousIndex; });
+    }
+    if (trace) {
+        size_t snapped = 0, moving = 0, bones = 0;
+        for (const auto& t : matching.Poses) {
+            snapped += t.Snap ? 1U : 0U;
+            moving += t.Moving ? 1U : 0U;
+            bones += t.Bones.size();
+        }
+        std::fprintf(stderr, "TRIAEVUM_POSES seq=%llu poses=%zu/%zu paired=%zu moving=%zu snapped=%zu bones=%zu mismatched=%zu\n",
+                     static_cast<unsigned long long>(current.Sequence), currentPoses.size(), previousPoses.size(),
+                     matching.Poses.size(), moving, snapped, bones, mismatched);
+    }
+}
+
+// The in-between skeleton, in the current view (before the camera's own
+// in-between motion). carrier: the holding model's, already sampled.
+void SamplePoseTransition(const PoseTransition& transition, float alpha, const std::vector<Affine34>* carrier,
+                          std::vector<Affine34>& bones) {
+    alpha = std::clamp(alpha, 0.0F, 1.0F);
+    const size_t count = transition.Bones.size();
+    if (transition.Snap && carrier == nullptr) {
+        bones = alpha < 0.5F ? transition.PreviousBones : transition.Current->Bones;
+    } else {
+        bones.resize(count);
+        for (const uint16_t index : transition.Order) {
+            const auto& bone = transition.Bones[index];
+            if (carrier != nullptr && bone.Parent < 0) {
+                const auto held = std::find_if(transition.HeldRoots.begin(), transition.HeldRoots.end(),
+                                               [&](const auto& root) { return root.first == index; });
+                if (held != transition.HeldRoots.end()) {
+                    Affine34 place{};
+                    for (size_t r = 0; r < 3U; ++r)
+                        for (size_t c = 0; c < 4U; ++c)
+                            place[r][c] = held->second[0][r][c] + (held->second[1][r][c] - held->second[0][r][c]) * alpha;
+                    bones[index] = MultiplyAffine((*carrier)[transition.CarrierBone], place);
+                    continue;
+                }
+            }
+            static const bool localRotation = std::getenv("TRIAEVUM_POSE_LOCAL_ROTATION") != nullptr;
+            if (!localRotation && bone.Parent >= 0 && bone.WorldDecomposed && bone.Decomposed && bone.SharpTurn) {
+                // Orientation blended in the view (a forearm and hand turning
+                // far opposite ways in one game frame keep the hand's own
+                // turn), the joint where the parent's in-between pose puts it.
+                const auto rotation = QuaternionMatrix(SlerpQuaternion(bone.WorldRotation0, bone.WorldRotation1, alpha));
+                const auto& parent = bones[static_cast<size_t>(bone.Parent)];
+                const auto& root = bones[bone.Root];
+                std::array<float, 3> joint{};
+                for (size_t r = 0; r < 3U; ++r)
+                    joint[r] = bone.Translation0[r] + (bone.Translation1[r] - bone.Translation0[r]) * alpha;
+                std::array<std::array<float, 3>, 3> model{};  // in the root's space
+                for (size_t r = 0; r < 3U; ++r)
+                    for (size_t c = 0; c < 3U; ++c) {
+                        float value = 0.0F;
+                        for (size_t k = 0; k < 3U; ++k) {
+                            const float shape =
+                                bone.WorldShape0[k][c] + (bone.WorldShape1[k][c] - bone.WorldShape0[k][c]) * alpha;
+                            value += rotation[r][k] * shape;
+                        }
+                        model[r][c] = value;
+                    }
+                Affine34 world{};
+                for (size_t r = 0; r < 3U; ++r) {
+                    for (size_t c = 0; c < 3U; ++c)
+                        world[r][c] = root[r][0] * model[0][c] + root[r][1] * model[1][c] + root[r][2] * model[2][c];
+                    world[r][3] = parent[r][3] + parent[r][0] * joint[0] + parent[r][1] * joint[1] + parent[r][2] * joint[2];
+                }
+                bones[index] = world;
+                continue;
+            }
+            Affine34 local{};
+            if (bone.Decomposed) {
+                const auto rotation = QuaternionMatrix(SlerpQuaternion(bone.Rotation0, bone.Rotation1, alpha));
+                std::array<std::array<float, 3>, 3> shape{};
+                for (size_t r = 0; r < 3U; ++r)
+                    for (size_t c = 0; c < 3U; ++c)
+                        shape[r][c] = bone.Shape0[r][c] + (bone.Shape1[r][c] - bone.Shape0[r][c]) * alpha;
+                for (size_t r = 0; r < 3U; ++r) {
+                    for (size_t c = 0; c < 3U; ++c)
+                        local[r][c] = rotation[r][0] * shape[0][c] + rotation[r][1] * shape[1][c] + rotation[r][2] * shape[2][c];
+                    local[r][3] = bone.Translation0[r] + (bone.Translation1[r] - bone.Translation0[r]) * alpha;
+                }
+            } else {
+                for (size_t r = 0; r < 3U; ++r)
+                    for (size_t c = 0; c < 4U; ++c)
+                        local[r][c] = InterpolateFinite(bone.Local0[r][c], bone.Local1[r][c], alpha);
+            }
+            bones[index] = bone.Parent >= 0 ? MultiplyAffine(bones[static_cast<size_t>(bone.Parent)], local) : local;
+        }
+    }
+}
+
+// A model part's bone rows from its sampled skeleton.
+void WriteSkinnedRows(const Oot3dPicaDrawSkinning& skinning, const std::vector<Affine34>& bones,
+                      Oot3dPicaVertexUniformState& uniforms) {
+    for (size_t entry = 0; entry < skinning.Bones.size(); ++entry) {
+        const auto m = SkinnedPaletteMatrix(skinning, entry, bones[static_cast<size_t>(skinning.Bones[entry])]);
+        for (size_t r = 0; r < 3U; ++r) uniforms.Floats[20U + 3U * entry + r] = m[r];
+    }
+}
+
+// Every needed skeleton (and its carriers) at alpha, in the in-between view.
+std::vector<std::vector<Affine34>> SampleModelPoses(const VisualDrawMatching& matching, float alpha,
+                                                    std::vector<bool> needed) {
+    const auto& poses = matching.Poses;
+    for (uint32_t index = 0; index < poses.size(); ++index)
+        if (needed[index])
+            for (uint32_t pose = poses[index].Carrier; pose < poses.size() && !needed[pose]; pose = poses[pose].Carrier)
+                needed[pose] = true;
+    std::vector<std::vector<Affine34>> sampled(poses.size());
+    for (const uint32_t pose : matching.PoseOrder) {
+        if (!needed[pose]) continue;
+        const uint32_t carrier = poses[pose].Carrier;
+        SamplePoseTransition(poses[pose], alpha, carrier < poses.size() ? &sampled[carrier] : nullptr, sampled[pose]);
+    }
+    if (matching.RigidCamera && matching.CameraDeltaValid && CameraInterpolationEnabled()) {
+        const auto camera = PartialCameraDelta(matching.CameraDelta, 1.0F - std::clamp(alpha, 0.0F, 1.0F));
+        for (uint32_t pose = 0; pose < poses.size(); ++pose)
+            if (needed[pose] && poses[pose].RigidCameraSpace)
+                for (auto& bone : sampled[pose]) bone = MultiplyAffine(camera, bone);
+    }
+    return sampled;
+}
+
+// The bone rows of every draw whose model has a pose in both frames, from
+// that pose's in-between skeleton. uniformsOf(index) is the draw's sampled
+// uniforms (created when the sampler had none).
+template <typename UniformsOf>
+std::vector<std::vector<Affine34>> ApplySampledPoses(const Oot3dPicaVisualFrame& previous,
+                                                     const Oot3dPicaVisualFrame& current,
+                                                     const VisualDrawMatching& matching, float alpha,
+                                                     UniformsOf uniformsOf) {
+    const auto& poses = matching.Poses;
+    if (poses.empty()) return {};
+    // The skeletons some draw shows, and their carriers.
+    std::vector<bool> needed(poses.size(), false);
+    for (size_t index = 0; index < current.Draws.size() && index < matching.PoseByCurrent.size(); ++index) {
+        const uint32_t pose = matching.PoseByCurrent[index];
+        if (pose < poses.size() && poses[pose].Moving) needed[pose] = true;
+    }
+    for (const auto& part : matching.PoseVanished)
+        if (alpha < 0.5F && poses[part.Pose].Moving) needed[part.Pose] = true;
+    auto sampled = SampleModelPoses(matching, alpha, needed);
+    for (size_t index = 0; index < current.Draws.size() && index < matching.PoseByCurrent.size(); ++index) {
+        const uint32_t pose = matching.PoseByCurrent[index];
+        if (pose >= poses.size() || !poses[pose].Moving) continue;
+        const auto& skinning = *current.Draws[index].Skinning;
+        auto& uniforms = uniformsOf(index);
+        for (size_t entry = 0; entry < skinning.Bones.size(); ++entry) {
+            const auto m = SkinnedPaletteMatrix(skinning, entry, sampled[pose][static_cast<size_t>(skinning.Bones[entry])]);
+            for (size_t r = 0; r < 3U; ++r) uniforms.Floats[20U + 3U * entry + r] = m[r];
+        }
+        // TRIAEVUM_POSE_CHECK: at alpha 0 a paired draw must show its previous rows.
+        static const bool check = std::getenv("TRIAEVUM_POSE_CHECK") != nullptr;
+        const auto& match = matching.PreviousByCurrent[index];
+        if (check && alpha == 0.0F && match.has_value() && !matching.PoseAppeared[index]) {
+            const auto& before = previous.Draws[match->PreviousIndex];
+            for (size_t entry = 0; entry < skinning.Bones.size(); ++entry) {
+                float worst = 0.0F;
+                for (size_t r = 0; r < 3U; ++r)
+                    for (size_t c = 0; c < 4U; ++c)
+                        worst = std::max(worst, std::abs(uniforms.Floats[20U + 3U * entry + r][c] -
+                                                         before.VertexShader.Uniforms.Floats[20U + 3U * entry + r][c]));
+                if (worst > 0.05F) {
+                    const auto* beforeSkinning = before.Skinning.get();
+                    std::fprintf(stderr,
+                                 "TRIAEVUM_POSE_CHECK seq=%llu draw=%zu prev=%zu kind=%d model=%08x verts=%u/%u entry=%zu bone=%d prevbone=%d snap=%d carried=%d diff=%.2f\n",
+                                 static_cast<unsigned long long>(current.Sequence), index, match->PreviousIndex,
+                                 static_cast<int>(match->Kind), current.Draws[index].Composition.NativeValue,
+                                 current.Draws[index].VertexCount, before.VertexCount, entry, skinning.Bones[entry],
+                                 beforeSkinning != nullptr && entry < beforeSkinning->Bones.size() ? beforeSkinning->Bones[entry] : -9,
+                                 poses[pose].Snap ? 1 : 0, poses[pose].Carrier < poses.size() ? 1 : 0, worst);
+                }
+            }
+        }
+    }
+    return sampled;
+}
 
 bool ApplyCameraDelta(const VisualDrawMatching& matching, float alpha,
                       Oot3dPicaVertexUniformState& uniforms) {
@@ -2908,6 +3593,31 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
         current, matching,
         [&](size_t index) -> const Oot3dPicaVertexUniformState* { return &output.Draws[index].VertexShader.Uniforms; },
         [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
+    const auto sampledPoses = ApplySampledPoses(
+        previous, current, matching, alpha,
+        [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
+    // A model's parts in one frame only (mesh switches): the nearer frame's.
+    if (alpha < 0.5F && (!matching.PoseVanished.empty() ||
+                         std::find(matching.PoseAppeared.begin(), matching.PoseAppeared.end(), true) !=
+                             matching.PoseAppeared.end())) {
+        std::vector<std::vector<size_t>> after(output.Draws.size());
+        for (size_t k = 0; k < matching.PoseVanished.size(); ++k)
+            if (matching.PoseVanished[k].After < after.size()) after[matching.PoseVanished[k].After].push_back(k);
+        std::vector<Oot3dPicaVulkanDrawPlan> merged;
+        merged.reserve(output.Draws.size() + matching.PoseVanished.size());
+        for (size_t index = 0; index < output.Draws.size(); ++index) {
+            if (index >= matching.PoseAppeared.size() || !matching.PoseAppeared[index])
+                merged.push_back(std::move(output.Draws[index]));
+            for (const size_t k : after[index]) {
+                const auto& part = matching.PoseVanished[k];
+                auto draw = previous.Draws[part.PreviousIndex];
+                if (part.Pose < sampledPoses.size() && !sampledPoses[part.Pose].empty())
+                    WriteSkinnedRows(*draw.Skinning, sampledPoses[part.Pose], draw.VertexShader.Uniforms);
+                merged.push_back(std::move(draw));
+            }
+        }
+        output.Draws = std::move(merged);
+    }
     if (output.Draws.empty()) {
         return false;
     }
@@ -3046,6 +3756,38 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
             if (!sampled.VertexUniforms.has_value()) sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
             return *sampled.VertexUniforms;
         });
+    const auto sampledPoses =
+        ApplySampledPoses(previous, current, matching, alpha, [&](size_t index) -> Oot3dPicaVertexUniformState& {
+            auto& sampled = output.Draws[index];
+            if (!sampled.VertexUniforms.has_value())
+                sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
+            return *sampled.VertexUniforms;
+        });
+    // Draws added after a current draw, and current draws left out.
+    std::vector<std::vector<Oot3dPicaVisualDrawView>> inserted;
+    std::vector<bool> hidden;
+    size_t insertedCount = 0, hiddenCount = 0;
+    // A model's parts in one frame only (mesh switches): the nearer frame's.
+    if (alpha < 0.5F) {
+        for (size_t index = 0; index < matching.PoseAppeared.size(); ++index) {
+            if (!matching.PoseAppeared[index]) continue;
+            if (hidden.empty()) hidden.assign(current.Draws.size(), false);
+            hidden[index] = true;
+            ++hiddenCount;
+        }
+        for (const auto& part : matching.PoseVanished) {
+            const auto& draw = previous.Draws[part.PreviousIndex];
+            Oot3dPicaVisualDrawView view;
+            view.BasePlan = &draw;
+            auto uniforms = draw.VertexShader.Uniforms;
+            if (part.Pose < sampledPoses.size() && !sampledPoses[part.Pose].empty())
+                WriteSkinnedRows(*draw.Skinning, sampledPoses[part.Pose], uniforms);
+            view.VertexUniforms.emplace(std::move(uniforms));
+            if (inserted.empty()) inserted.resize(current.Draws.size());
+            inserted[part.After].push_back(std::move(view));
+            ++insertedCount;
+        }
+    }
     // Opaque world draws the game culled as they left the view: in the previous
     // frame, gone from the current one, and their place is outside the
     // current view (the game drops what goes off screen, the in-between
@@ -3076,10 +3818,10 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
             for (size_t currentIndex = 0; currentIndex < matching.PreviousByCurrent.size(); ++currentIndex)
                 if (const auto& match = matching.PreviousByCurrent[currentIndex])
                     currentOfPrevious[match->PreviousIndex] = currentIndex;
-            std::vector<std::vector<Oot3dPicaVisualDrawView>> inserted;
-            size_t insertedCount = 0;
             for (size_t previousIndex = 0; previousIndex < previous.Draws.size(); ++previousIndex) {
                 if (currentOfPrevious[previousIndex] != kNone) continue;
+                // A paired model's parts: its skeleton decides (above).
+                if (previousIndex < matching.PreviousInPose.size() && matching.PreviousInPose[previousIndex]) continue;
                 const auto& draw = previous.Draws[previousIndex];
                 const auto layer = draw.Composition.Layer;
                 // Opaque only: transparent ones are mostly effects whose
@@ -3134,20 +3876,22 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
                                  static_cast<int>(layer), draw.State.Framebuffer.ColorPhysicalAddress, point[0], point[1],
                                  point[2], w != 0.0F ? x / w : 0.0F, w != 0.0F ? y / w : 0.0F);
             }
-            if (insertedCount != 0U) {
-                std::vector<Oot3dPicaVisualDrawView> merged;
-                merged.reserve(output.Draws.size() + insertedCount);
-                for (size_t index = 0; index < output.Draws.size(); ++index) {
-                    merged.push_back(std::move(output.Draws[index]));
-                    for (auto& extra : inserted[index]) merged.push_back(std::move(extra));
-                }
-                output.Draws = std::move(merged);
-                static const bool trace = std::getenv("TRIAEVUM_JUMP_TRACE") != nullptr;
-                if (trace)
-                    std::fprintf(stderr, "TRIAEVUM_CULLED_KEPT %zu alpha=%.2f turn=%.1f move=%.1f\n", insertedCount,
-                                 alpha, cameraTurn * 57.2958F, cameraMove);
-            }
+            static const bool trace = std::getenv("TRIAEVUM_JUMP_TRACE") != nullptr;
+            if (trace && insertedCount != 0U)
+                std::fprintf(stderr, "TRIAEVUM_CULLED_KEPT %zu alpha=%.2f turn=%.1f move=%.1f\n", insertedCount, alpha,
+                             cameraTurn * 57.2958F, cameraMove);
         }
+    }
+    if (insertedCount != 0U || hiddenCount != 0U) {
+        const size_t count = current.Draws.size();
+        std::vector<Oot3dPicaVisualDrawView> merged;
+        merged.reserve(output.Draws.size() + insertedCount);
+        for (size_t index = 0; index < output.Draws.size(); ++index) {
+            if (index >= count || hidden.empty() || !hidden[index]) merged.push_back(std::move(output.Draws[index]));
+            if (index < count && !inserted.empty())
+                for (auto& extra : inserted[index]) merged.push_back(std::move(extra));
+        }
+        output.Draws = std::move(merged);
     }
     return !output.Draws.empty();
 }
@@ -3382,6 +4126,169 @@ bool AnalyzeAndSampleOot3dPicaVisualFrameView(const Oot3dPicaVisualFrame& previo
                 .count());
     }
     return sampled;
+}
+
+void EvaluateOot3dPicaVisualInterpolation(const Oot3dPicaVisualFrame& before, const Oot3dPicaVisualFrame& middle,
+                                          const Oot3dPicaVisualFrame& after, std::FILE* output) {
+    if (output == nullptr) return;
+    Oot3dPicaPreparedVisualTransition transition;
+    Oot3dPicaVisualFrameViewSample sample;
+    if (!transition.Prepare(before, after) || !transition.Sample(before, after, 0.5F, sample)) return;
+    const auto truth = BuildVisualDrawMatching(middle, after);
+    const auto outer = BuildVisualDrawMatching(before, after);
+    // A point's place on a 720p screen through a draw's projection (f[0..3]).
+    const auto screen = [](const Oot3dPicaVertexUniformState& u, const std::array<float, 3>& p,
+                           std::array<float, 2>& at) {
+        const auto row = [&](size_t r) {
+            return u.Floats[r][0] * p[0] + u.Floats[r][1] * p[1] + u.Floats[r][2] * p[2] + u.Floats[r][3];
+        };
+        const float w = row(3);
+        if (!(w > 20.0F) || !std::isfinite(w)) return false;  // at the camera: no meaningful place
+        at = {row(0) / w * 640.0F, row(1) / w * 360.0F};
+        return std::isfinite(at[0]) && std::isfinite(at[1]);
+    };
+    double total = 0.0, totalHeld = 0.0;
+    size_t measured = 0, over = 0;
+    for (const auto& view : sample.Draws) {
+        if (view.BasePlan < after.Draws.data() || view.BasePlan >= after.Draws.data() + after.Draws.size()) continue;
+        const size_t c = static_cast<size_t>(view.BasePlan - after.Draws.data());
+        const auto& match = truth.PreviousByCurrent[c];
+        if (!match.has_value()) continue;
+        const auto& real = middle.Draws[match->PreviousIndex].VertexShader.Uniforms;
+        const auto& shown = view.VertexUniforms.has_value() ? *view.VertexUniforms : after.Draws[c].VertexShader.Uniforms;
+        const auto& held = after.Draws[c].VertexShader.Uniforms;
+        if (!UsesModelViewLayout(real) || !UsesModelViewLayout(shown)) continue;
+        // Each bone: its origin and the ends of its axes (8 units out), the
+        // worst point of the worst bone.
+        float worst = 0.0F, worstHeld = 0.0F;
+        size_t worstRow = 0;
+        // Only rows this draw loaded (the rest are the draw before's).
+        const auto* realBefore =
+            match->PreviousIndex > 0U ? &middle.Draws[match->PreviousIndex - 1U].VertexShader.Uniforms : nullptr;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+            if (realBefore != nullptr && !RowsMoved(*realBefore, real, first) &&
+                realBefore->Floats[first] == real.Floats[first])
+                continue;
+            const float dr = Determinant3(AffineAt(real, first)), ds = Determinant3(AffineAt(shown, first));
+            if (!(std::abs(dr) > 1.0e-15F) || !std::isfinite(ds) || real.Floats[first] == held.Floats[first] &&
+                real.Floats[first + 1] == held.Floats[first + 1] && real.Floats[first + 2] == held.Floats[first + 2] &&
+                shown.Floats[first] == held.Floats[first] && shown.Floats[first + 1] == held.Floats[first + 1])
+                continue;
+            for (size_t point = 0; point < 4U; ++point) {
+                std::array<float, 3> local{};
+                if (point > 0U) local[point - 1U] = 8.0F / std::cbrt(std::max(std::abs(dr), 1.0e-12F));
+                const auto place = [&](const Oot3dPicaVertexUniformState& u) {
+                    std::array<float, 3> p{};
+                    for (size_t r = 0; r < 3U; ++r)
+                        p[r] = u.Floats[first + r][0] * local[0] + u.Floats[first + r][1] * local[1] +
+                               u.Floats[first + r][2] * local[2] + u.Floats[first + r][3];
+                    return p;
+                };
+                std::array<float, 2> a{}, b{}, h{};
+                if (!screen(real, place(real), a) || !screen(real, place(shown), b) || !screen(real, place(held), h))
+                    continue;
+                const float error = std::hypot(a[0] - b[0], a[1] - b[1]);
+                if (error > worst) { worst = error; worstRow = first; }
+                worstHeld = std::max(worstHeld, std::hypot(a[0] - h[0], a[1] - h[1]));
+            }
+        }
+        if (worst > 1.0e4F) continue;  // behind the camera
+        ++measured;
+        total += worst;
+        totalHeld += worstHeld;
+        const auto& draw = after.Draws[c];
+        const auto& pair = outer.PreviousByCurrent[c];
+        if (worst > 4.0F) {
+            ++over;
+            std::fprintf(output, "D %llu draw=%zu err=%.1f held=%.1f row=%zu kind=%d model=%08x ord=%u verts=%u motion=%d\n",
+                         static_cast<unsigned long long>(middle.Sequence), c, worst, worstHeld, worstRow,
+                         pair.has_value() ? static_cast<int>(pair->Kind) : -1, draw.Composition.NativeValue,
+                         draw.Composition.Ordinal, draw.VertexCount, outer.MotionFor(c) != nullptr ? (outer.MotionFor(c)->Snap ? 2 : 1) : 0);
+        }
+    }
+    std::fprintf(output, "F %llu measured=%zu mean=%.2f held=%.2f over=%zu\n",
+                 static_cast<unsigned long long>(middle.Sequence), measured, measured ? total / measured : 0.0,
+                 measured ? totalHeld / measured : 0.0, over);
+    // Skeletons: every joint (bone origin) and its axes' ends 8 units out as
+    // drawn (each bone read back from the draws' sampled palette) against
+    // the real middle skeleton, through that model's middle projection. Per
+    // model its worst joint. Any method is measured the same way.
+    const auto middlePoses = CollectFramePoses(middle);
+    const auto afterPoses = CollectFramePoses(after);
+    if (afterPoses.empty()) return;
+    std::unordered_map<const Oot3dPicaModelPose*, const Oot3dPicaModelPose*> realOf;
+    for (const auto& [key, pose] : afterPoses) {
+        const auto found = middlePoses.find(key);
+        if (found != middlePoses.end() && found->second->Skeleton == pose->Skeleton &&
+            found->second->Bones.size() == pose->Bones.size())
+            realOf.emplace(pose, found->second);
+    }
+    std::unordered_map<const Oot3dPicaModelPose*, const Oot3dPicaVertexUniformState*> projectionOf;
+    for (const auto& draw : middle.Draws)
+        if (draw.Skinning != nullptr && draw.Skinning->Pose != nullptr && UsesModelViewLayout(draw.VertexShader.Uniforms))
+            projectionOf.emplace(draw.Skinning->Pose.get(), &draw.VertexShader.Uniforms);
+    struct Worst {
+        float Error = 0.0F, Held = 0.0F;
+        size_t Bone = 0;
+    };
+    std::unordered_map<const Oot3dPicaModelPose*, Worst> worstOf;
+    for (const auto& view : sample.Draws) {
+        if (view.BasePlan < after.Draws.data() || view.BasePlan >= after.Draws.data() + after.Draws.size()) continue;
+        const auto& draw = *view.BasePlan;
+        if (draw.Skinning == nullptr || draw.Skinning->Pose == nullptr) continue;
+        const auto real = realOf.find(draw.Skinning->Pose.get());
+        if (real == realOf.end()) continue;
+        const auto projection = projectionOf.find(real->second);
+        if (projection == projectionOf.end()) continue;
+        const auto& skinning = *draw.Skinning;
+        if (!SkinningMatchesUniforms(skinning, draw.VertexShader.Uniforms)) continue;
+        const auto& shownUniforms = view.VertexUniforms.has_value() ? *view.VertexUniforms : draw.VertexShader.Uniforms;
+        auto& worst = worstOf[skinning.Pose.get()];
+        for (size_t entry = 0; entry < skinning.Bones.size(); ++entry) {
+            const auto bone = static_cast<size_t>(skinning.Bones[entry]);
+            // shown palette = bone * post: the bone as drawn.
+            Affine34 post = skinning.InverseBind ? skinning.Pose->InverseBinds[bone] : Affine34{{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
+            for (size_t r = 0; r < 3U; ++r)
+                post[r][3] += post[r][0] * skinning.Offset[0] + post[r][1] * skinning.Offset[1] + post[r][2] * skinning.Offset[2];
+            const auto inversePost = InvertAffine(post);
+            if (!inversePost) continue;
+            const auto shown = MultiplyAffine(AffineAt(shownUniforms, 20U + 3U * entry), *inversePost);
+            const auto& r = real->second->Bones[bone];
+            const float det = Determinant3(r);
+            if (!(std::abs(det) > 1.0e-15F)) continue;
+            for (size_t point = 0; point < 4U; ++point) {
+                std::array<float, 3> local{};
+                if (point > 0U) local[point - 1U] = 8.0F / std::cbrt(std::abs(det));
+                const auto place = [&](const Affine34& m) {
+                    std::array<float, 3> p{};
+                    for (size_t row = 0; row < 3U; ++row)
+                        p[row] = m[row][0] * local[0] + m[row][1] * local[1] + m[row][2] * local[2] + m[row][3];
+                    return p;
+                };
+                std::array<float, 2> a{}, b{}, h{};
+                if (!screen(*projection->second, place(r), a) || !screen(*projection->second, place(shown), b) ||
+                    !screen(*projection->second, place(skinning.Pose->Bones[bone]), h))
+                    continue;
+                const float error = std::hypot(a[0] - b[0], a[1] - b[1]);
+                if (error > worst.Error) { worst.Error = error; worst.Bone = bone; }
+                worst.Held = std::max(worst.Held, std::hypot(a[0] - h[0], a[1] - h[1]));
+            }
+        }
+    }
+    double poseTotal = 0.0, poseHeld = 0.0;
+    size_t poseMeasured = 0;
+    for (const auto& [pose, worst] : worstOf) {
+        if (worst.Error > 1.0e4F) continue;
+        ++poseMeasured;
+        poseTotal += worst.Error;
+        poseHeld += worst.Held;
+        if (worst.Error > 4.0F)
+            std::fprintf(output, "B %llu model=%08x bones=%zu err=%.1f held=%.1f bone=%zu parent=%d\n",
+                         static_cast<unsigned long long>(middle.Sequence), pose->Model, pose->Bones.size(), worst.Error,
+                         worst.Held, worst.Bone, pose->Parents[worst.Bone]);
+    }
+    std::fprintf(output, "S %llu models=%zu mean=%.2f held=%.2f\n", static_cast<unsigned long long>(middle.Sequence),
+                 poseMeasured, poseMeasured ? poseTotal / poseMeasured : 0.0, poseMeasured ? poseHeld / poseMeasured : 0.0);
 }
 
 bool ViewOot3dPicaVisualFrame(

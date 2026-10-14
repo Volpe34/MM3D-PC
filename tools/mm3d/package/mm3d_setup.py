@@ -34,6 +34,9 @@ SUPPORTED = {
     # code.bin SHA-256 -> version
     "6eec27b1827eab2c87744ac38066d569ffe6fe75790b1eb3300bd91f5099038d": "USA v1.1",
 }
+# romfs.bin SHA-256 of a clean USA v1.1 dump. Anything else (a romfs of
+# another version/region, a modded or partial dump) can crash at boot.
+CLEAN_ROMFS = {"7b64a50a303eb4b9ec0939630d5e77b8e89a92ea129ea06f73b67d20a1ec024a"}
 TITLE = {"id": "mm3d", "program_id": "0004000000125500", "region": 1, "language": 1}
 
 
@@ -358,6 +361,11 @@ def main() -> int:
         fail("This ROM version is not supported. Supported: Majora's Mask 3D " +
              ", ".join(SUPPORTED.values()) + " (decrypted .3ds/.cci).")
     print(f"  Majora's Mask 3D {version}")
+    if sha256(game / "romfs.bin") not in CLEAN_ROMFS:
+        print("  WARNING: the game data (romfs) of this ROM is not a clean USA v1.1 dump.\n"
+              "  If the game does not start or crashes, dump the ROM again from an\n"
+              "  unmodified game: no mods or patches (Project Restoration, texture packs\n"
+              "  in the ROM...), USA v1.1 base game merged with its update.")
 
     work = install / "work"
     step("Preparing the translation recipe")

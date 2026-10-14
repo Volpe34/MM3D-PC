@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdio>
+
 #include "oot3d_native_pica_vulkan_plan.h"
 
 #include <cstddef>
@@ -146,6 +148,13 @@ bool AnalyzeAndSampleOot3dPicaVisualFrameView(const Oot3dPicaVisualFrame& previo
 bool ViewOot3dPicaVisualFrame(
     const Oot3dPicaVisualFrame& frame,
     Oot3dPicaVisualFrameViewSample& output);
+
+// Interpolation against ground truth: three consecutive game frames, the
+// in-between of the outer two (as presented) compared with the real middle
+// one, per draw in 720p pixels. Writes a summary line per triple and one per
+// draw over the reporting threshold.
+void EvaluateOot3dPicaVisualInterpolation(const Oot3dPicaVisualFrame& before, const Oot3dPicaVisualFrame& middle,
+                                          const Oot3dPicaVisualFrame& after, std::FILE* output);
 
 // Draw matching and transition analysis are immutable for a pair of source
 // frames. Prepare once, then sample at 1/2 for 2x or at 1/3 and 2/3 for 3x

@@ -598,15 +598,20 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
     }
     // Spans of this list first; otherwise the owner recorded at the guest
     // address (a called block's draws belong to the caller's jump).
+    std::shared_ptr<const Oot3dPicaDrawSkinning> drawSkinning;
     const auto resolveDrawComposition =
         [&](uint32_t offsetWords) -> Oot3dPicaCompositionAttribution {
         auto attribution = resolveComposition(offsetWords);
+        drawSkinning.reset();
         if (attribution.Provenance == Oot3dPicaCompositionProvenance::Unknown &&
             mCompositionAddressResolver != nullptr &&
             mCommandListCompositionDomain != Oot3dPicaCompositionDomain::Ui) {
             const uint32_t address = mJumpCallSite.value_or(
                 commandListAddress + offsetWords * 4U);
-            mCompositionAddressResolver->ResolveCommandAddress(address, attribution);
+            if (mCompositionAddressResolver->ResolveCommandAddress(address, attribution) &&
+                attribution.Provenance == Oot3dPicaCompositionProvenance::NativeModelInstance) {
+                drawSkinning = mCompositionAddressResolver->ResolveDrawSkinning(address);
+            }
         }
         if (attribution.Provenance ==
             Oot3dPicaCompositionProvenance::NativeModelInstance) {
@@ -732,6 +737,7 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                     id == kPicaTriggerDrawIndexed, mPicaRegisters,
                     mVertexShader, mGeometryShader, mFogLut, mProcTexLuts,
                     mLightingLuts, mDefaultAttributes);
+                draw.Skinning = std::move(drawSkinning);
                 if (mPacketSink != nullptr &&
                     !mPacketSink->SubmitDrawPacket(draw, error)) {
                     return false;

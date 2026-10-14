@@ -742,6 +742,35 @@ NriPicaPipelineBridge::AsyncPipelineState NriPicaPipelineBridge::CreateOwnedPipe
 #endif
 }
 
+bool NriPicaPipelineBridge::FinishOrWithdrawAsyncPipeline(
+    NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc) {
+#ifndef ENABLE_RENDERER3DS_NRI
+    (void)pipelineId;
+    (void)desc;
+    return false;
+#else
+    if (!pipelineId) return false;
+    if (mImpl->OwnedPipelines.contains(pipelineId)) return true;
+    auto& async = *mImpl->Async;
+    {
+        std::lock_guard lock(async.Mutex);
+        if (!async.Pending.contains(pipelineId) && !async.Finished.contains(pipelineId)) return false;
+        const auto queued = std::find_if(async.Jobs.begin(), async.Jobs.end(),
+                                         [&](const NriPicaAsyncPipelines::Job& job) { return job.Id == pipelineId; });
+        if (queued != async.Jobs.end()) {
+            async.Jobs.erase(queued);
+            async.Pending.erase(pipelineId);
+            return false;
+        }
+    }
+    for (;;) {
+        const auto state = CreateOwnedPipelineAsync(pipelineId, desc);
+        if (state != AsyncPipelineState::Pending) return state == AsyncPipelineState::Ready;
+        std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+#endif
+}
+
 void NriPicaPipelineBridge::WaitForAsyncPipelines() {
 #ifdef ENABLE_RENDERER3DS_NRI
     auto& async = *mImpl->Async;

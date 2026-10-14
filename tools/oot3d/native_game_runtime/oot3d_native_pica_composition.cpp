@@ -4,6 +4,10 @@
 #include "recomp/a32_runtime.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <array>
 #include <limits>
 #include <string_view>
@@ -211,13 +215,122 @@ std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept {
 }
 
 std::span<const uint32_t> Mm3dNativePicaCompositionHookPcs() noexcept {
-    static constexpr std::array kHooks{kMm3dModelDrawEntry, kMm3dModelDrawReturn};
+    static constexpr std::array kHooks{kMm3dModelDrawEntry, kMm3dPrimitiveSetDrawEntry,
+                                       kMm3dModelDrawReturn};
     return kHooks;
+}
+
+namespace {
+
+bool ReadGuestMatrix(oot3d::recomp::a32::MemoryBus& memory, uint32_t address,
+                     Oot3dPicaModelPose::Matrix& matrix) {
+    for (size_t row = 0; row < 3U; ++row) {
+        for (size_t column = 0; column < 4U; ++column) {
+            uint32_t bits = 0U;
+            if (!memory.Read32(address + static_cast<uint32_t>((row * 4U + column) * 4U), &bits)) return false;
+            std::memcpy(&matrix[row][column], &bits, sizeof(bits));
+        }
+    }
+    return true;
+}
+
+// The model's skeleton (model + 8): +0x0C its data ([0] the CMB "skl "
+// chunk, bone count at +8; [4] the bone records, 0x2C bytes, parent at +2),
+// +0x10 the inverse bind matrices, +0x24 the bone matrices the draw loads.
+std::shared_ptr<const Oot3dPicaModelPose> ReadMm3dModelPose(oot3d::recomp::a32::MemoryBus& memory,
+                                                            uint32_t model) {
+    constexpr uint32_t kSkeletonMagic = 0x206C6B73U;  // "skl "
+    constexpr uint32_t kMaximumBones = 256U;
+    uint32_t skeleton = 0U, data = 0U, chunk = 0U, records = 0U, magic = 0U, count = 0U;
+    uint32_t bones = 0U, inverseBinds = 0U;
+    if (!memory.Read32(model + 8U, &skeleton) || skeleton == 0U || !memory.Read32(skeleton + 0x0CU, &data) ||
+        data == 0U || !memory.Read32(data, &chunk) || !memory.Read32(data + 4U, &records) ||
+        !memory.Read32(chunk, &magic) || magic != kSkeletonMagic || !memory.Read32(chunk + 8U, &count) ||
+        count == 0U || count > kMaximumBones || !memory.Read32(skeleton + 0x24U, &bones) ||
+        !memory.Read32(skeleton + 0x10U, &inverseBinds) || bones == 0U || inverseBinds == 0U)
+        return nullptr;
+    auto pose = std::make_shared<Oot3dPicaModelPose>();
+    pose->Model = model;
+    pose->Skeleton = chunk;
+    pose->Parents.resize(count);
+    pose->Bones.resize(count);
+    pose->InverseBinds.resize(count);
+    for (uint32_t bone = 0; bone < count; ++bone) {
+        uint16_t parent = 0U;
+        if (!memory.Read16(records + 0x2CU * bone + 2U, &parent)) return nullptr;
+        const auto signedParent = static_cast<int16_t>(parent);
+        if (signedParent >= static_cast<int32_t>(count) || signedParent == static_cast<int32_t>(bone))
+            return nullptr;
+        pose->Parents[bone] = signedParent < 0 ? int16_t{-1} : signedParent;
+        if (!ReadGuestMatrix(memory, bones + 48U * bone, pose->Bones[bone]) ||
+            !ReadGuestMatrix(memory, inverseBinds + 48U * bone, pose->InverseBinds[bone]))
+            return nullptr;
+    }
+    return pose;
+}
+
+} // namespace
+
+void Oot3dNativePicaCompositionTracker::CloseMm3dPart(uint32_t end) {
+    if (!mActiveModelDraw.has_value() || mActiveModelDraw->Part == nullptr) return;
+    const uint32_t begin = mActiveModelDraw->PartBegin;
+    auto skinning = std::move(mActiveModelDraw->Part);
+    mActiveModelDraw->Part.reset();
+    if (end <= begin || end - begin > 0x100000U) return;
+    auto it = mPartSpans.lower_bound(begin);
+    if (it != mPartSpans.begin() && std::prev(it)->second.EndAddress > begin) --it;
+    while (it != mPartSpans.end() && it->first < end) it = mPartSpans.erase(it);
+    if (mPartSpans.size() >= MaximumModelSpans) mPartSpans.clear();
+    mPartSpans.emplace(begin, PartSpan{end, mModelListBase, mModelListSerial, std::move(skinning)});
 }
 
 void Oot3dNativePicaCompositionTracker::ObserveMm3dBlockEntry(
     uint32_t pc, const oot3d::recomp::a32::GuestState& state,
     oot3d::recomp::a32::MemoryBus& memory) {
+    if (pc == kMm3dPrimitiveSetDrawEntry) {
+        static const bool disabled = std::getenv("TRIAEVUM_NO_MODEL_POSES") != nullptr;
+        uint32_t cursor = 0U;
+        if (disabled || !mActiveModelDraw.has_value() || state.r[0] != mActiveModelDraw->Model ||
+            !memory.Read32(kMm3dCommandListCursorAddress, &cursor))
+            return;
+        CloseMm3dPart(cursor);
+        auto& draw = *mActiveModelDraw;
+        if (!draw.PoseRead) {
+            draw.PoseRead = true;
+            draw.Pose = ReadMm3dModelPose(memory, draw.Model);
+        }
+        if (draw.Pose == nullptr) return;
+        // The set (CMB "prms"): +0x0C skinning mode (2: smooth), +0x0E bone
+        // count, +0x10 offset of its bone table; the shape's +0x18 is the
+        // position offset every bone matrix is translated by.
+        uint32_t shape = 0U, offsets = 0U;
+        uint16_t setOffset = 0U, mode = 0U, count = 0U, tableOffset = 0U;
+        if (!memory.Read32(state.r[1], &shape) || !memory.Read32(state.r[1] + 4U, &offsets) ||
+            !memory.Read16(offsets + 2U * state.r[2], &setOffset))
+            return;
+        const uint32_t set = shape + setOffset;
+        if (!memory.Read16(set + 0x0CU, &mode) || !memory.Read16(set + 0x0EU, &count) ||
+            !memory.Read16(set + 0x10U, &tableOffset) || count == 0U || count > 23U)
+            return;
+        auto skinning = std::make_shared<Oot3dPicaDrawSkinning>();
+        skinning->Pose = draw.Pose;
+        skinning->InverseBind = mode == 2U && count > 1U;
+        skinning->Bones.resize(count);
+        const uint32_t table = set + static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(tableOffset)));
+        for (uint32_t k = 0; k < count; ++k) {
+            uint16_t bone = 0U;
+            if (!memory.Read16(table + 2U * k, &bone) || bone >= draw.Pose->Bones.size()) return;
+            skinning->Bones[k] = static_cast<int16_t>(bone);
+        }
+        for (size_t axis = 0; axis < 3U; ++axis) {
+            uint32_t bits = 0U;
+            if (!memory.Read32(shape + 0x18U + static_cast<uint32_t>(axis * 4U), &bits)) return;
+            std::memcpy(&skinning->Offset[axis], &bits, sizeof(bits));
+        }
+        draw.PartBegin = cursor;
+        draw.Part = std::move(skinning);
+        return;
+    }
     if (pc == kMm3dModelDrawEntry) {
         ++mStats.ModelDrawEntries;
         mActiveModelDraw.reset();
@@ -236,6 +349,8 @@ void Oot3dNativePicaCompositionTracker::ObserveMm3dBlockEntry(
             (base != mModelListBase || cursor < mModelListCursor)) {
             mModelSpans.erase(mModelSpans.lower_bound(base),
                               mModelSpans.lower_bound(cursor));
+            mPartSpans.erase(mPartSpans.lower_bound(base),
+                             mPartSpans.lower_bound(cursor));
             mModelListBase = base;
             mModelListSerials[base] = ++mModelListSerial;
             if (mModelListSerials.size() > 64U) mModelListSerials.clear();
@@ -247,13 +362,15 @@ void Oot3dNativePicaCompositionTracker::ObserveMm3dBlockEntry(
     if (pc != kMm3dModelDrawReturn || !mActiveModelDraw.has_value()) {
         return;
     }
-    const auto draw = *mActiveModelDraw;
-    mActiveModelDraw.reset();
     uint32_t end = 0U;
     if (!memory.Read32(kMm3dCommandListCursorAddress, &end)) {
         ++mStats.ReadFailures;
+        mActiveModelDraw.reset();
         return;
     }
+    CloseMm3dPart(end);
+    const auto draw = std::move(*mActiveModelDraw);
+    mActiveModelDraw.reset();
     // A full list continues in another buffer: the range is not contiguous.
     if (end <= draw.BeginAddress || end - draw.BeginAddress > 0x100000U) {
         if (end != draw.BeginAddress) ++mStats.InvalidModelSpans;
@@ -288,6 +405,17 @@ bool Oot3dNativePicaCompositionTracker::ResolveCommandAddress(
                    Oot3dPicaCompositionProvenance::NativeModelInstance,
                    kMm3dModelDrawEntry, it->second.Model};
     return true;
+}
+
+std::shared_ptr<const Oot3dPicaDrawSkinning> Oot3dNativePicaCompositionTracker::ResolveDrawSkinning(
+    uint32_t address) const {
+    auto it = mPartSpans.upper_bound(address);
+    if (it == mPartSpans.begin()) return nullptr;
+    --it;
+    if (address >= it->second.EndAddress) return nullptr;
+    const auto serial = mModelListSerials.find(it->second.ListBase);
+    if (serial == mModelListSerials.end() || serial->second != it->second.ListSerial) return nullptr;
+    return it->second.Skinning;
 }
 
 bool Oot3dNativePicaCompositionTracker::RecordPendingSpan(
@@ -641,6 +769,7 @@ void Oot3dNativePicaCompositionTracker::Reset() noexcept {
     mPendingSpans.clear();
     mActiveModelDraw.reset();
     mModelSpans.clear();
+    mPartSpans.clear();
     mModelListBase = 0U;
     mModelListCursor = 0U;
     mModelListSerials.clear();

@@ -105,6 +105,7 @@ struct Oot3dPicaVulkanDrawPlan {
     uint64_t GeometryIdentity = 0;
     uint64_t GeometryContentVersion = 0;
     bool GeometryIdentityAvailable = false;
+    std::shared_ptr<const Oot3dPicaDrawSkinning> Skinning;
 
     [[nodiscard]]
 
