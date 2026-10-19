@@ -597,6 +597,10 @@ NativeA32ProcessRunResult NativeA32Process::Run(
                 }
                 if (AllThreadsTerminated()) {
                     result.Kind = NativeA32ProcessRunKind::Terminated;
+                } else if (result.Kind == NativeA32ProcessRunKind::Terminated) {
+                    // One thread ended (MM3D's hint movie decoder) while
+                    // the others wait: the process waits, it has not ended.
+                    result.Kind = NativeA32ProcessRunKind::Waiting;
                 }
                 return result;
             }
@@ -634,6 +638,10 @@ NativeA32ProcessRunResult NativeA32Process::Run(
                 }
                 if (AllThreadsTerminated()) {
                     result.Kind = NativeA32ProcessRunKind::Terminated;
+                } else if (result.Kind == NativeA32ProcessRunKind::Terminated) {
+                    // One thread ended (MM3D's hint movie decoder) while
+                    // the others wait: the process waits, it has not ended.
+                    result.Kind = NativeA32ProcessRunKind::Waiting;
                 }
                 return result;
             }

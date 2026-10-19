@@ -44,6 +44,13 @@ public:
   void ObservePerspective(uint32_t guestFunction, uint32_t guestReturnAddress,
                           float left, float right, float bottom, float top,
                           float nearPlane, float farPlane);
+  // As ObservePerspective, with the camera read at the same guest moment, so
+  // the eye/at belong to the frame whose frustum this is.
+  void ObservePerspectiveCamera(uint32_t guestFunction, uint32_t guestReturnAddress,
+                                float left, float right, float bottom, float top,
+                                float nearPlane, float farPlane,
+                                const std::array<float, 3> &eye,
+                                const std::array<float, 3> &at);
   std::optional<NativeA32SceneViewSnapshot>
   Capture(oot3d::recomp::a32::MemoryBus &memory);
   void Reset();

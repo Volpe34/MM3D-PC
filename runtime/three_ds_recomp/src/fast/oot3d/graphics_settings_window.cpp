@@ -1,7 +1,9 @@
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
+#include <cstdlib>
 #include <mutex>
+#include <string_view>
 
 namespace Fast::Oot3d {
 namespace {
@@ -135,8 +137,15 @@ void GraphicsSettingsPanel::Draw() {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
+        // TRIAEVUM_F1_TAB=<label>: that tab selected when F1 first opens (tests).
+        static const char* startTab = std::getenv("TRIAEVUM_F1_TAB");
         for (const auto& tab : applicationTabs) {
-            if (tab != nullptr && ImGui::BeginTabItem(tab->Label())) {
+            ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
+            if (startTab != nullptr && tab != nullptr && std::string_view(startTab) == tab->Label()) {
+                flags = ImGuiTabItemFlags_SetSelected;
+                startTab = nullptr;
+            }
+            if (tab != nullptr && ImGui::BeginTabItem(tab->Label(), nullptr, flags)) {
                 ImGui::PushID(tab->Label());
                 tab->Draw();
                 ImGui::PopID();

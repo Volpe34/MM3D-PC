@@ -314,6 +314,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint64_t CustomReplacementHash = 0;
         bool CustomReplacementPending = false;
         bool CustomReplacementReady = false;
+        uint32_t LastUsedSecond = 0;  // mTextureClockSeconds when last sampled
     };
 
     struct BufferAllocation {
@@ -938,6 +939,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     ::Fast::Renderer::ExtensionPassSchedulePlan
         mDirectionalShadowSchedulePlan;
     uint64_t mFrameAzaharTextureGeneration = 0;
+    // The generation whose textures alone remain in mNativePicaTextures; reset
+    // when a texture restore may bring back records of another generation.
+    std::optional<uint64_t> mNativePicaTexturesGeneration;
+    uint32_t mTextureClockSeconds = 0;
+    uint32_t mTextureEvictionCheckedSecond = 0;
     uint64_t mCustomTextureUploadBytesThisFrame = 0;
     // Custom textures wait for their decode (no pop-in): no upload budget.
     bool mCustomTextureWaitThisFrame = false;
@@ -1135,6 +1141,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mGrassInsertionAttemptedTargetsThisFrame;
     std::set<NativePicaRenderTargetKey>
         mGrassWorldTargetsThisFrame;
+    std::map<NativePicaRenderTargetKey, VkViewport>
+        mGrassWorldViewportsThisFrame;
     std::set<std::pair<uint64_t, NativePicaRenderTargetKey>>
         mDirectionalShadowInsertionAttemptedTargetsThisFrame;
     std::unordered_map<uint64_t, uint32_t>

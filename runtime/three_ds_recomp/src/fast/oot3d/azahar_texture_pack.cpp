@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -383,6 +384,11 @@ void EnsureDumpPack(const std::filesystem::path& dumpDirectory, bool useNewHash)
 struct IndexedTexture {
     std::filesystem::path Path;
     bool FlipPngFiles = true;
+    // The custom texture folder's image for a hash the overlay (button
+    // style) also replaces: drawn at its resolution with only the overlay's
+    // own changes (its button glyphs) painted over it.
+    std::filesystem::path BasePath;
+    bool BaseFlipPngFiles = true;
 };
 
 std::optional<uint64_t> ParseFilenameHash(const std::filesystem::path& path) {
@@ -492,7 +498,200 @@ uint32_t AppendMipChain(std::vector<uint8_t>& pixels, uint32_t width, uint32_t h
     return levels;
 }
 
-std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedTexture& indexed, uint64_t hash) {
+struct DecodedPng {
+    std::vector<uint8_t> Rgba8;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+};
+
+DecodedPng DecodePng(const std::filesystem::path& path, bool flipPngFiles) {
+    const auto input = ReadBinaryFile(path);
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* decoded =
+        stbi_load_from_memory(input.data(), static_cast<int>(input.size()), &width, &height, &channels, 4);
+    if (decoded == nullptr || width <= 0 || height <= 0) {
+        const std::string reason =
+            stbi_failure_reason() != nullptr ? stbi_failure_reason() : "unknown PNG decode failure";
+        if (decoded != nullptr) {
+            stbi_image_free(decoded);
+        }
+        throw std::runtime_error("unable to decode custom texture " + path.string() + ": " + reason);
+    }
+    DecodedPng result;
+    result.Width = static_cast<uint32_t>(width);
+    result.Height = static_cast<uint32_t>(height);
+    result.Rgba8.assign(decoded, decoded + static_cast<size_t>(width) * static_cast<size_t>(height) * 4U);
+    stbi_image_free(decoded);
+    if (!flipPngFiles) {
+        FlipRows(result.Rgba8, result.Width, result.Height, 4U);
+    }
+    return result;
+}
+
+// The overlay's changes painted over the larger base image. Changed texels:
+// those differing from the game's own texture (native, overlay-sized), or,
+// without it, clusters differing strongly from the base scaled down (an HD
+// redraw differs a little everywhere, a replaced glyph a lot).
+void PaintOverlayChanges(DecodedPng& base, const DecodedPng& overlay, std::span<const uint8_t> native) {
+    const uint32_t w = overlay.Width, h = overlay.Height;
+    const size_t texels = static_cast<size_t>(w) * h;
+    const float sx = static_cast<float>(base.Width) / static_cast<float>(w);
+    const float sy = static_cast<float>(base.Height) / static_cast<float>(h);
+    const bool exact = native.size() == texels * 4U;
+    std::vector<uint8_t> reference(texels * 4U);
+    if (exact) {
+        std::copy(native.begin(), native.end(), reference.begin());
+    } else {
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                const uint32_t x0 = static_cast<uint32_t>(x * sx), x1 = std::max(x0 + 1U, static_cast<uint32_t>((x + 1) * sx));
+                const uint32_t y0 = static_cast<uint32_t>(y * sy), y1 = std::max(y0 + 1U, static_cast<uint32_t>((y + 1) * sy));
+                std::array<uint32_t, 4> sum{};
+                for (uint32_t by = y0; by < y1 && by < base.Height; ++by)
+                    for (uint32_t bx = x0; bx < x1 && bx < base.Width; ++bx)
+                        for (int c = 0; c < 4; ++c) sum[c] += base.Rgba8[(static_cast<size_t>(by) * base.Width + bx) * 4U + c];
+                const uint32_t n = (std::min(y1, base.Height) - y0) * (std::min(x1, base.Width) - x0);
+                for (int c = 0; c < 4; ++c)
+                    reference[(static_cast<size_t>(y) * w + x) * 4U + c] = static_cast<uint8_t>(sum[c] / std::max(1U, n));
+            }
+        }
+    }
+    const int threshold = exact ? 10 : 72;
+    std::vector<uint8_t> changed(texels, 0U);
+    for (size_t i = 0; i < texels; ++i) {
+        const uint8_t* a = &overlay.Rgba8[i * 4U];
+        const uint8_t* b = &reference[i * 4U];
+        if (a[3] < 8U && b[3] < 8U) continue;  // both clear
+        int diff = std::abs(int(a[3]) - int(b[3]));
+        for (int c = 0; c < 3; ++c) diff = std::max(diff, std::abs(int(a[c]) - int(b[c])) * std::max<int>(a[3], b[3]) / 255);
+        changed[i] = diff > threshold ? 1U : 0U;
+    }
+    if (!exact) {  // drop specks (edges of the redraw)
+        std::vector<uint32_t> stack, component;
+        for (size_t start = 0; start < texels; ++start) {
+            if (changed[start] != 1U) continue;
+            component.clear();
+            stack.assign(1, static_cast<uint32_t>(start));
+            changed[start] = 2U;
+            while (!stack.empty()) {
+                const uint32_t i = stack.back();
+                stack.pop_back();
+                component.push_back(i);
+                const int x = static_cast<int>(i % w), y = static_cast<int>(i / w);
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= static_cast<int>(w) || ny >= static_cast<int>(h)) continue;
+                        const size_t n = static_cast<size_t>(ny) * w + static_cast<size_t>(nx);
+                        if (changed[n] == 1U) { changed[n] = 2U; stack.push_back(static_cast<uint32_t>(n)); }
+                    }
+            }
+            if (component.size() < 12U)
+                for (const uint32_t i : component) changed[i] = 0U;
+        }
+    }
+    // Grow by a texel so a glyph comes with its outline.
+    std::vector<float> mask(texels, 0.0F);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            bool nearGlyph = false;
+            for (int dy = -1; dy <= 1 && !nearGlyph; ++dy)
+                for (int dx = -1; dx <= 1 && !nearGlyph; ++dx) {
+                    const int nx = static_cast<int>(x) + dx, ny = static_cast<int>(y) + dy;
+                    nearGlyph = nx >= 0 && ny >= 0 && nx < static_cast<int>(w) && ny < static_cast<int>(h) &&
+                           changed[static_cast<size_t>(ny) * w + static_cast<size_t>(nx)] != 0U;
+                }
+            mask[static_cast<size_t>(y) * w + x] = nearGlyph ? 1.0F : 0.0F;
+        }
+    const auto bilinear = [&](float fx, float fy, std::array<float, 5>& out) {
+        fx -= 0.5F; fy -= 0.5F;
+        const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+        const float tx = fx - static_cast<float>(x0), ty = fy - static_cast<float>(y0);
+        out = {};
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 2; ++i) {
+                const int x = std::clamp(x0 + i, 0, static_cast<int>(w) - 1);
+                const int y = std::clamp(y0 + j, 0, static_cast<int>(h) - 1);
+                const float weight = (i ? tx : 1.0F - tx) * (j ? ty : 1.0F - ty);
+                const size_t t = static_cast<size_t>(y) * w + static_cast<size_t>(x);
+                const uint8_t* p = &overlay.Rgba8[t * 4U];
+                const float a = p[3] / 255.0F;
+                for (int c = 0; c < 3; ++c) out[c] += p[c] * a * weight;  // premultiplied
+                out[3] += a * weight;
+                out[4] += mask[t] * weight;
+            }
+    };
+    std::array<float, 5> sample{};
+    for (uint32_t y = 0; y < base.Height; ++y)
+        for (uint32_t x = 0; x < base.Width; ++x) {
+            const float ox = (static_cast<float>(x) + 0.5F) / sx, oy = (static_cast<float>(y) + 0.5F) / sy;
+            const size_t nearest = static_cast<size_t>(std::min(h - 1U, static_cast<uint32_t>(oy))) * w +
+                                   std::min(w - 1U, static_cast<uint32_t>(ox));
+            if (mask[nearest] == 0.0F) {  // quick reject: nothing masked in the bilinear footprint
+                bool any = false;
+                for (int dy = -1; dy <= 1 && !any; ++dy)
+                    for (int dx = -1; dx <= 1 && !any; ++dx) {
+                        const int nx = static_cast<int>(ox) + dx, ny = static_cast<int>(oy) + dy;
+                        any = nx >= 0 && ny >= 0 && nx < static_cast<int>(w) && ny < static_cast<int>(h) &&
+                              mask[static_cast<size_t>(ny) * w + static_cast<size_t>(nx)] != 0.0F;
+                    }
+                if (!any) continue;
+            }
+            bilinear(ox, oy, sample);
+            const float m = std::clamp(sample[4], 0.0F, 1.0F);
+            if (m <= 0.0F) continue;
+            uint8_t* p = &base.Rgba8[(static_cast<size_t>(y) * base.Width + x) * 4U];
+            const float a = std::clamp(sample[3], 0.0F, 1.0F);
+            const float baseA = p[3] / 255.0F;
+            const float outA = a * m + baseA * (1.0F - m);
+            for (int c = 0; c < 3; ++c) {
+                const float premultiplied = sample[c] * m + p[c] * baseA * (1.0F - m);
+                p[c] = outA > 0.0F ? static_cast<uint8_t>(std::clamp(std::lround(premultiplied / outA), 0L, 255L)) : 0U;
+            }
+            p[3] = static_cast<uint8_t>(std::clamp(std::lround(outA * 255.0F), 0L, 255L));
+        }
+}
+
+std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedTexture& indexed, uint64_t hash,
+                                                                  std::span<const uint8_t> native = {}) {
+    if (!indexed.BasePath.empty()) {
+        static const bool overlayOnly = std::getenv("TRIAEVUM_NO_HD_UNDER_BUTTON_STYLE") != nullptr;
+        auto overlay = DecodePng(indexed.Path, indexed.FlipPngFiles);
+        DecodedPng image;
+        std::filesystem::path source = indexed.Path;
+        if (!overlayOnly) {
+            auto base = DecodePng(indexed.BasePath, indexed.BaseFlipPngFiles);
+            if (base.Width > overlay.Width && base.Height > overlay.Height) {
+                std::vector<uint8_t> flippedNative;
+                if (!indexed.FlipPngFiles && !native.empty()) {  // the native image as the overlay is laid out
+                    flippedNative.assign(native.begin(), native.end());
+                    FlipRows(flippedNative, overlay.Width, overlay.Height, 4U);
+                    native = flippedNative;
+                }
+                PaintOverlayChanges(base, overlay, native);
+                image = std::move(base);
+                source = indexed.BasePath;
+            }
+        }
+        if (image.Rgba8.empty()) image = std::move(overlay);
+        static const bool trace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+        if (trace) {
+            std::fprintf(stderr, "TEXTRACE merged %016llX native=%d -> %ux%u from %s\n",
+                         static_cast<unsigned long long>(hash), native.empty() ? 0 : 1, image.Width, image.Height,
+                         source.filename().string().c_str());
+        }
+        auto pixels = std::make_shared<std::vector<uint8_t>>(std::move(image.Rgba8));
+        auto replacement = std::make_shared<AzaharTextureReplacement>();
+        replacement->Width = image.Width;
+        replacement->Height = image.Height;
+        replacement->MipLevels = AppendMipChain(*pixels, image.Width, image.Height);
+        replacement->NativeHash = hash;
+        replacement->Rgba8 = std::move(pixels);
+        replacement->SourcePath = source;
+        return replacement;
+    }
     const auto input = ReadBinaryFile(indexed.Path);
     int width = 0;
     int height = 0;
@@ -547,6 +746,7 @@ struct LoadJob {
     uint64_t Generation = 0;
     IndexedTexture Texture;
     bool Preload = false;  // decoded ahead of use (background, lower priority)
+    std::shared_ptr<const std::vector<uint8_t>> Native;  // the game's own image (merged layers)
 };
 
 // The decoded size of a PNG from its header (no decode): width x height x 4.
@@ -783,7 +983,7 @@ class AzaharTexturePackRuntime::Impl {
         }
 
         try {
-            const auto replacement = DecodeReplacement(indexed, *loadHash);
+            const auto replacement = DecodeReplacement(indexed, *loadHash, request.NativeRgba8);
             std::scoped_lock lock(mMutex);
             if (generation != mGeneration || !LoadActiveLocked()) {
                 return nullptr;
@@ -943,6 +1143,10 @@ class AzaharTexturePackRuntime::Impl {
             *loadHash, generation);
         mLoadJobs.push_back({
             *loadHash, generation, indexed->second});
+        if (!indexed->second.BasePath.empty() && !request.NativeRgba8.empty()) {
+            mLoadJobs.back().Native = std::make_shared<const std::vector<uint8_t>>(
+                request.NativeRgba8.begin(), request.NativeRgba8.end());
+        }
         DemandLocked(*loadHash);
         mWorkAvailable.notify_one();
         return {
@@ -951,7 +1155,7 @@ class AzaharTexturePackRuntime::Impl {
     }
 
     AzaharTextureResolveResult PollQueued(
-        uint64_t nativeHash) {
+        uint64_t nativeHash, std::span<const uint8_t> nativeRgba8) {
         std::scoped_lock lock(mMutex);
         if (!mConfigured ||
             !LoadActiveLocked()) {
@@ -986,6 +1190,10 @@ class AzaharTexturePackRuntime::Impl {
         if (const auto indexed = mIndex.find(nativeHash); indexed != mIndex.end()) {
             mPendingLoadGenerations.insert_or_assign(nativeHash, mGeneration);
             mLoadJobs.push_back({nativeHash, mGeneration, indexed->second});
+            if (!indexed->second.BasePath.empty() && !nativeRgba8.empty()) {
+                mLoadJobs.back().Native =
+                    std::make_shared<const std::vector<uint8_t>>(nativeRgba8.begin(), nativeRgba8.end());
+            }
             DemandLocked(nativeHash);
             mWorkAvailable.notify_one();
             return {
@@ -1130,7 +1338,12 @@ class AzaharTexturePackRuntime::Impl {
         if (mConfiguration.LoadCustomTextures) {
             auto base = IndexTexturePack(mLoadDirectory, mPack, mUnsupportedFiles, &mLastError);
             for (auto& [hash, texture] : base) {
-                mIndex.try_emplace(hash, std::move(texture));  // the overlay wins
+                // The overlay wins; a larger custom image stays under its changes.
+                const auto [entry, inserted] = mIndex.try_emplace(hash, texture);
+                if (!inserted && entry->second.BasePath.empty()) {
+                    entry->second.BasePath = texture.Path;
+                    entry->second.BaseFlipPngFiles = texture.FlipPngFiles;
+                }
             }
         }
         if (mConfiguration.DumpTextures) {
@@ -1150,6 +1363,9 @@ class AzaharTexturePackRuntime::Impl {
         uint64_t planned = mCacheBytes;
         std::unordered_set<std::string> paths;
         for (const auto& [hash, texture] : mIndex) {
+            if (!texture.BasePath.empty()) {
+                continue;  // merged on first use, with the game's own image
+            }
             if (mReplacementCache.contains(hash) || mPendingLoadGenerations.contains(hash) ||
                 mFailedLoadHashes.contains(hash) || !paths.insert(texture.Path.string()).second) {
                 continue;
@@ -1268,7 +1484,9 @@ class AzaharTexturePackRuntime::Impl {
                 std::string failure;
                 try {
                     replacement = DecodeReplacement(
-                        loadJob.Texture, loadJob.Hash);
+                        loadJob.Texture, loadJob.Hash,
+                        loadJob.Native != nullptr ? std::span<const uint8_t>(*loadJob.Native)
+                                                  : std::span<const uint8_t>{});
                 } catch (const std::exception& exception) {
                     failure = exception.what();
                 }
@@ -1396,8 +1614,8 @@ AzaharTexturePackRuntime::ResolveOrQueue(
 
 AzaharTextureResolveResult
 AzaharTexturePackRuntime::PollQueued(
-    uint64_t nativeHash) const {
-    return mImpl->PollQueued(nativeHash);
+    uint64_t nativeHash, std::span<const uint8_t> nativeRgba8) const {
+    return mImpl->PollQueued(nativeHash, nativeRgba8);
 }
 
 AzaharTexturePackStatus AzaharTexturePackRuntime::Snapshot() const {

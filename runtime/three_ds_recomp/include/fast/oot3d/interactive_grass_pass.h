@@ -49,7 +49,8 @@ class InteractiveGrassPass final {
     bool DrawPrepared(VkCommandBuffer commandBuffer, uint32_t width,
                       uint32_t height,
                       const EffectGeometryProviderPlan& providerPlan,
-                      const PicaAttachmentRequirements& attachments);
+                      const PicaAttachmentRequirements& attachments,
+                      const VkViewport* worldViewport = nullptr);
     void ResetTemporalState();
     void Shutdown();
 

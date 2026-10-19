@@ -1,12 +1,21 @@
 #include "fast/oot3d/pica_nri_pipeline_state.h"
 #include "fast/oot3d/pica_alpha_coverage_policy.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
+#include <array>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace Fast::Oot3d {
 using Renderer3ds::kPicaColorAttachmentCount;
 VkFormat FindPicaDepthFormat(VkPhysicalDevice physicalDevice) {
-    for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}) {
+    // PICA depth buffers are D24S8 and games test stencil (MM3D's Lens of
+    // Truth masks what it reveals): a format with stencil first.
+    // TRIAEVUM_NO_STENCIL_BUFFER: plain D32 first, as before.
+    static const bool noStencil = std::getenv("TRIAEVUM_NO_STENCIL_BUFFER") != nullptr;
+    const auto candidates = noStencil
+        ? std::array{VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}
+        : std::array{VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT};
+    for (auto format : candidates) {
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
         constexpr auto required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;

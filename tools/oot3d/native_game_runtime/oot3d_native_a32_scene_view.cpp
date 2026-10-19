@@ -62,6 +62,21 @@ void NativeA32SceneViewProbe::ObservePerspective(
   mLastError.clear();
 }
 
+void NativeA32SceneViewProbe::ObservePerspectiveCamera(
+    uint32_t guestFunction, uint32_t guestReturnAddress, float left,
+    float right, float bottom, float top, float nearPlane, float farPlane,
+    const std::array<float, 3> &eye, const std::array<float, 3> &at) {
+  const uint64_t serial = mNextSerial;
+  ObservePerspective(guestFunction, guestReturnAddress, left, right, bottom,
+                     top, nearPlane, farPlane);
+  if (mNextSerial == serial || !mPerspective.has_value()) {
+    return;  // invalid frustum: keep the previous snapshot untouched
+  }
+  mPerspective->Eye = eye;
+  mPerspective->At = at;
+  mPerspective->CameraAvailable = true;
+}
+
 std::optional<NativeA32SceneViewSnapshot>
 NativeA32SceneViewProbe::Capture(oot3d::recomp::a32::MemoryBus &memory) {
   if (!mPerspective.has_value()) {
@@ -70,7 +85,7 @@ NativeA32SceneViewProbe::Capture(oot3d::recomp::a32::MemoryBus &memory) {
   }
 
   NativeA32SceneViewSnapshot snapshot = *mPerspective;
-  if (mStats.LastPlayStateAddress == 0U) {
+  if (snapshot.CameraAvailable || mStats.LastPlayStateAddress == 0U) {
     ++mStats.SnapshotsCaptured;
     mLastError.clear();
     return snapshot;

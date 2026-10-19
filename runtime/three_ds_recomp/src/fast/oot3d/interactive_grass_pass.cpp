@@ -1519,7 +1519,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
 bool InteractiveGrassPass::DrawPrepared(
     VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
     const EffectGeometryProviderPlan& providerPlan,
-    const PicaAttachmentRequirements& attachments) {
+    const PicaAttachmentRequirements& attachments,
+    const VkViewport* worldViewport) {
     const size_t pipelineIndex = attachments.NativeColorOnly() ? 0U : 1U;
     const VkPipeline pipeline = mImpl->Pipelines[pipelineIndex];
     if (!providerPlan.Valid() ||
@@ -1539,8 +1540,20 @@ bool InteractiveGrassPass::DrawPrepared(
     const VkDeviceSize offset = 0U;
     vkCmdBindVertexBuffers(commandBuffer, 0U, 1U, &mImpl->PreparedInstanceBuffer, &offset);
     vkCmdBindIndexBuffer(commandBuffer, mImpl->IndexBuffer.Buffer, 0, VK_INDEX_TYPE_UINT32);
-    const VkViewport viewport{ 0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height), 0.0F, 1.0F };
-    const VkRect2D scissor{ { 0, 0 }, { width, height } };
+    // Blades must be rasterized with the same viewport as the ground they stand on:
+    // MM3D draws the world into a sub-rectangle of its target (2880 of 3072 columns),
+    // and a full-target viewport stretched blades away from the ground.
+    VkViewport viewport{ 0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height), 0.0F, 1.0F };
+    VkRect2D scissor{ { 0, 0 }, { width, height } };
+    if (worldViewport != nullptr) {
+        viewport = *worldViewport;
+        const auto x0 = std::clamp<int64_t>(static_cast<int64_t>(std::floor(viewport.x)), 0, width);
+        const auto y0 = std::clamp<int64_t>(static_cast<int64_t>(std::floor(viewport.y)), 0, height);
+        const auto x1 = std::clamp<int64_t>(static_cast<int64_t>(std::ceil(viewport.x + viewport.width)), x0, width);
+        const auto y1 = std::clamp<int64_t>(static_cast<int64_t>(std::ceil(viewport.y + viewport.height)), y0, height);
+        scissor = { { static_cast<int32_t>(x0), static_cast<int32_t>(y0) },
+                    { static_cast<uint32_t>(x1 - x0), static_cast<uint32_t>(y1 - y0) } };
+    }
     vkCmdSetViewport(commandBuffer, 0U, 1U, &viewport);
     vkCmdSetScissor(commandBuffer, 0U, 1U, &scissor);
     for (const auto& batch : mImpl->Batches) {

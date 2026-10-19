@@ -4,8 +4,10 @@
 #include "oot3d_cpu_phase_probe.h"
 #include "fast/renderer/frame_time_distribution.h"
 #include "fast/renderer/slow_frame_samples.h"
+#include "oot3d/renderer/azahar_texture_pack.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "oot3d_game_language_panel.h"
+#include "mm3d_f1_panels.h"
 #ifdef OOT3D_WHOLE_AOT_PRODUCT_MODE
 #include "oot3d_native_crash_diagnostics.h"
 #endif
@@ -382,6 +384,12 @@ struct NativeWidescreenProjectionState {
   // HUD has faded out by then): the presented frame is kept at that point.
   uint32_t PauseCapturePc = 0;
   bool PauseCaptured = false;
+  // The capture's driver (each frame; r0 = the capture object): it sets
+  // +0x1D to 1 one frame before converting the RGB8 top framebuffers at
+  // *(+0xC)/*(+0x10) (Pictograph Box photo, pause background). Those are
+  // display transfer outputs the GPU path never writes to guest memory.
+  uint32_t CaptureDriverPc = 0;
+  uint32_t CaptureObject = 0;
   // MM3D: the play state's calc function (after the pad is read, before the
   // camera's update) and the F1 camera speed applied to the right stick the
   // camera reads.
@@ -465,6 +473,8 @@ struct NativeWidescreenProjectionState {
       PendingTopScreenPauseChildRestore;
   Oot3dNativeGame::NativeFrameRatePolicy *FrameRatePolicy = nullptr;
   Oot3dNativeGame::NativeA32SceneViewProbe *SceneViewProbe = nullptr;
+  // MM3D: read the Play camera in the frustum hook (ReadMm3dPlayCamera).
+  bool Mm3dPlayCamera = false;
   Oot3dNativeGame::NativeA32PlayerTimingProbe *PlayerTimingProbe = nullptr;
   Oot3dNativeGame::NativeTemporalEventLedger *TemporalEventLedger = nullptr;
   Oot3dNativeGame::NativeA32PlayerTemporalBridge *PlayerTemporalBridge =
@@ -1888,6 +1898,34 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
   return handled;
 }
 
+// MM3D's active Play camera (layout from Project Restoration / dekui):
+// GlobalContext = *(*0x72F5C0 + 0x16C), Play when +0x13C's byte 1 is 4,
+// camera index at +0xA7A, cameras at +0x408 (0x198 each) with the look-at
+// point at +0x50 and the eye at +0x5C.
+bool ReadMm3dPlayCamera(oot3d::recomp::a32::MemoryBus &memory,
+                        std::array<float, 3> &eye, std::array<float, 3> &at) {
+  uint32_t context = 0, game = 0, type = 0, indices = 0;
+  if (!memory.Read32(0x0072F5C0U, &context) || context < 0x100000U ||
+      !memory.Read32(context + 0x16CU, &game) || game < 0x100000U || (game & 3U) != 0U ||
+      !memory.Read32(game + 0x13CU, &type) || ((type >> 8U) & 0xFFU) != 4U ||
+      !memory.Read32(game + 0xA78U, &indices) || (indices >> 16U) > 3U) {
+    return false;
+  }
+  const uint32_t camera = game + 0x408U + (indices >> 16U) * 0x198U;
+  std::array<uint32_t, 6> words{};
+  for (uint32_t index = 0; index < 6U; ++index) {
+    if (!memory.Read32(camera + 0x50U + index * 4U, &words[index])) {
+      return false;
+    }
+  }
+  for (uint32_t index = 0; index < 3U; ++index) {
+    at[index] = std::bit_cast<float>(words[index]);
+    eye[index] = std::bit_cast<float>(words[3U + index]);
+  }
+  const float dx = at[0] - eye[0], dy = at[1] - eye[1], dz = at[2] - eye[2];
+  return std::isfinite(dx + dy + dz) && dx * dx + dy * dy + dz * dz > 1.0e-6F;
+}
+
 // MM3D: Tatl's "wants to talk" alert sits in the upper screen's top left,
 // under the hearts and magic placed there: it is moved down below the
 // minimap (layout units, y down; TRIAEVUM_TATL_ALERT_Y, 0 leaves it). v1.1's
@@ -2678,6 +2716,10 @@ void ApplyNativeWidescreenProjectionPolicy(
     runtime.PauseCaptured = true;
     return;
   }
+  if (pc != 0U && pc == runtime.CaptureDriverPc) {
+    runtime.CaptureObject = state.r[0];
+    return;
+  }
   if (pc != 0U && pc == runtime.LayoutPassPc && runtime.TraceMemory != nullptr) {
     runtime.LowerLayoutNames = ReadMm3dLayoutQueueNames(*runtime.TraceMemory, state.r[0], 28U);
     MoveMm3dTatlAlert(*runtime.TraceMemory);
@@ -2756,10 +2798,22 @@ void ApplyNativeWidescreenProjectionPolicy(
     ++projection.FrustumCalls;
   }
   if (runtime.SceneViewProbe != nullptr) {
-    runtime.SceneViewProbe->ObservePerspective(
-        pc, state.r[14], resolvedLeft, resolvedRight,
-        resolved.Frustum.Bottom, resolved.Frustum.Top,
-        resolved.Frustum.NearPlane, resolved.Frustum.FarPlane);
+    std::array<float, 3> eye{}, at{};
+    // Read the camera now, while the guest builds this frame's view: read at
+    // publish time it can already be the next frame's, and anchored effects
+    // (grass) then drift while the camera moves.
+    if (runtime.Mm3dPlayCamera && runtime.TraceMemory != nullptr &&
+        ReadMm3dPlayCamera(*runtime.TraceMemory, eye, at)) {
+      runtime.SceneViewProbe->ObservePerspectiveCamera(
+          pc, state.r[14], resolvedLeft, resolvedRight,
+          resolved.Frustum.Bottom, resolved.Frustum.Top,
+          resolved.Frustum.NearPlane, resolved.Frustum.FarPlane, eye, at);
+    } else {
+      runtime.SceneViewProbe->ObservePerspective(
+          pc, state.r[14], resolvedLeft, resolvedRight,
+          resolved.Frustum.Bottom, resolved.Frustum.Top,
+          resolved.Frustum.NearPlane, resolved.Frustum.FarPlane);
+    }
   }
 }
 
@@ -3500,6 +3554,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   // OoT3D picks its language from the RomFS message archives; other titles
   // declare region and language in their process manifest.
   std::shared_ptr<Oot3dNativeGame::GameLanguageSettings> languageSettings;
+  // MM3D's F1 > Warp and F1 > Buttons.
+  std::shared_ptr<Oot3dNativeGame::Mm3dWarpRequest> mm3dWarpRequest;
+  std::shared_ptr<Oot3dNativeGame::Mm3dButtonLabelEditor> mm3dButtonLabels;
   // A title other than OoT3D runs without the OoT3D ports, hooks and UI
   // semantics, which are all keyed by OoT3D code and data addresses.
   const bool foreignTitle = manifest->Title.Present;
@@ -3511,6 +3568,18 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   if (manifest->Title.Present) {
     hostConfig.SystemLanguage = manifest->Title.Language;
     hostConfig.SystemRegion = manifest->Title.Region;
+    if (manifest->Title.Id == "mm3d") {
+      // MM3D (USA) carries English, French and Spanish (message/us/use, usf,
+      // uss.gmsg and layout/US_*) and picks one by the system language.
+      languageSettings = std::make_shared<Oot3dNativeGame::GameLanguageSettings>(
+          std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "game_language.json",
+          std::vector<Oot3dNativeGame::GameLanguage>{
+              {"en", "English", 1}, {"fr", "Francais", 2}, {"es", "Espanol", 5}});
+      hostConfig.SystemLanguage = languageSettings->SystemId();
+      mm3dWarpRequest = std::make_shared<Oot3dNativeGame::Mm3dWarpRequest>();
+      mm3dButtonLabels = std::make_shared<Oot3dNativeGame::Mm3dButtonLabelEditor>(
+          std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "button_labels.json");
+    }
   } else {
     languageSettings = std::make_shared<Oot3dNativeGame::GameLanguageSettings>(
         std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "game_language.json",
@@ -3798,6 +3867,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       widescreenProjection.FrustumPc = restoration ? 0x00123010U : 0x00122FE8U;
       widescreenProjection.OrthographicPc = restoration ? 0x00131838U : 0x00131810U;
       widescreenProjection.FrustumAspect = 400.0F / 240.0F;
+      widescreenProjection.Mm3dPlayCamera = std::getenv("TRIAEVUM_MM3D_LATE_CAMERA") == nullptr;
       if (Oot3dNativeGame::TriAevumWidescreenEnabled()) {
         blockEntryHooks.push_back(widescreenProjection.FrustumPc);
       }
@@ -3806,6 +3876,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         blockEntryHooks.push_back(widescreenProjection.PauseTextureSetupPc);
         widescreenProjection.PauseCapturePc = restoration ? 0x00120608U : 0x001205E0U;
         blockEntryHooks.push_back(widescreenProjection.PauseCapturePc);
+      }
+      if (std::getenv("TRIAEVUM_NO_CAPTURE_READBACK") == nullptr) {
+        widescreenProjection.CaptureDriverPc = restoration ? 0x00112358U : 0x0011232CU;
+        blockEntryHooks.push_back(widescreenProjection.CaptureDriverPc);
       }
       if (!restoration) {
         widescreenProjection.LayoutPassPc = 0x001267E8U;
@@ -4268,6 +4342,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::vector<std::shared_ptr<Fast::Oot3d::GraphicsSettingsPanelTab>>
       applicationSettingsTabs;
   if (languageSettings) applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
+  if (mm3dWarpRequest) applicationSettingsTabs.push_back(Oot3dNativeGame::CreateMm3dWarpPanel(mm3dWarpRequest));
+  if (mm3dButtonLabels)
+    applicationSettingsTabs.push_back(Oot3dNativeGame::CreateMm3dButtonLabelPanel(mm3dButtonLabels));
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(
           controlConfigRuntime,
@@ -4956,50 +5033,59 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           }
           memory.Write16(game + 0xC52EU, warpEntrances[nextWarp]);
           memory.Write8(game + 0xC529U, 0x14U);
-          std::fprintf(stderr, "TRIAEVUM_WARP entrance=0x%04X index=%zu\n", warpEntrances[nextWarp], nextWarp);
+          std::fprintf(stderr, "TRIAEVUM_WARP entrance=0x%04X index=%zu ms=%lld\n", warpEntrances[nextWarp], nextWarp,
+                       static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::steady_clock::now().time_since_epoch())
+                                                  .count()));
           ++nextWarp;
           lastWarp = std::chrono::steady_clock::now();
         }
       }
     }
-    if (manifest->Title.Id == "mm3d" && !cameraSnapshot.CameraAvailable) {
-      // MM3D's active Play camera (layout from Project Restoration / dekui):
-      // GlobalContext = *(*0x72F5C0 + 0x16C), Play when +0x13C's byte 1 is 4,
-      // camera index at +0xA7A, cameras at +0x408 (0x198 each) with the
-      // look-at point at +0x50 and the eye at +0x5C.
+    if (mm3dWarpRequest) {
+      // F1 > Warp: the test warps' request (next_entrance +0xC52E, transition
+      // trigger +0xC529), only in the play state.
       auto &memory = process.Memory();
-      uint32_t context = 0, game = 0, type = 0, indices = 0;
-      if (memory.Read32(0x0072F5C0U, &context) && context >= 0x100000U &&
-          memory.Read32(context + 0x16CU, &game) && game >= 0x100000U && (game & 3U) == 0U &&
-          memory.Read32(game + 0x13CU, &type) && ((type >> 8U) & 0xFFU) == 4U &&
-          memory.Read32(game + 0xA78U, &indices) && (indices >> 16U) <= 3U) {
-        const uint32_t camera = game + 0x408U + (indices >> 16U) * 0x198U;
-        std::array<uint32_t, 6> words{};
-        bool read = true;
-        for (uint32_t index = 0; index < 6U && read; ++index) {
-          read = memory.Read32(camera + 0x50U + index * 4U, &words[index]);
-        }
-        if (read) {
-          for (uint32_t index = 0; index < 3U; ++index) {
-            cameraSnapshot.At[index] = std::bit_cast<float>(words[index]);
-            cameraSnapshot.Eye[index] = std::bit_cast<float>(words[3U + index]);
-          }
-          const float dx = cameraSnapshot.At[0] - cameraSnapshot.Eye[0];
-          const float dy = cameraSnapshot.At[1] - cameraSnapshot.Eye[1];
-          const float dz = cameraSnapshot.At[2] - cameraSnapshot.Eye[2];
-          cameraSnapshot.CameraAvailable =
-              std::isfinite(dx + dy + dz) && dx * dx + dy * dy + dz * dz > 1.0e-6F;
-          static FILE *cameraTrace = [] {
-            const char *path = std::getenv("TRIAEVUM_CAMERA_TRACE");
-            return path != nullptr ? std::fopen(path, "w") : nullptr;
-          }();
-          if (cameraTrace != nullptr) {
-            std::fprintf(cameraTrace, "%llu %.3f %.3f %.3f\n",
-                         static_cast<unsigned long long>(snapshot->Serial),
-                         cameraSnapshot.At[0], cameraSnapshot.At[1], cameraSnapshot.At[2]);
-            std::fflush(cameraTrace);
-          }
-        }
+      uint32_t context = 0, game = 0, type = 0;
+      const bool inPlay = memory.Read32(0x0072F5C0U, &context) && context >= 0x100000U &&
+                          memory.Read32(context + 0x16CU, &game) && game >= 0x100000U && (game & 3U) == 0U &&
+                          memory.Read32(game + 0x13CU, &type) && ((type >> 8U) & 0xFFU) == 4U;
+      mm3dWarpRequest->InPlay = inPlay;
+      // TRIAEVUM_F1_WARP_TEST=<entrance>: the F1 warp asked for once in play (tests).
+      static bool warpTestQueued = false;
+      static const auto warpTestStart = std::chrono::steady_clock::now();
+      if (const char *test = std::getenv("TRIAEVUM_F1_WARP_TEST");
+          test != nullptr && inPlay && !warpTestQueued &&
+          std::chrono::steady_clock::now() - warpTestStart > std::chrono::seconds(4)) {
+        warpTestQueued = true;
+        mm3dWarpRequest->Entrance = static_cast<int>(std::strtol(test, nullptr, 0));
+      }
+      const int entrance = mm3dWarpRequest->Entrance.load();
+      if (entrance >= 0 && inPlay) {
+        const int form = mm3dWarpRequest->Form.exchange(-1);
+        if (form >= 0 && form <= 4) memory.Write8(0x7751D8U + 0x26U, static_cast<uint8_t>(form));
+        memory.Write16(game + 0xC52EU, static_cast<uint16_t>(entrance));
+        memory.Write8(game + 0xC529U, 0x14U);
+        mm3dWarpRequest->Entrance = -1;
+        std::fprintf(stderr, "oot3d_native_game: warp to entrance 0x%04X (F1)\n", entrance);
+      }
+    }
+    if (manifest->Title.Id == "mm3d" && !cameraSnapshot.CameraAvailable) {
+      // Fallback when the frustum hook did not supply the camera (hook off,
+      // or TRIAEVUM_MM3D_LATE_CAMERA): read it now, possibly a frame late.
+      cameraSnapshot.CameraAvailable =
+          ReadMm3dPlayCamera(process.Memory(), cameraSnapshot.Eye, cameraSnapshot.At);
+    }
+    if (manifest->Title.Id == "mm3d" && cameraSnapshot.CameraAvailable) {
+      static FILE *cameraTrace = [] {
+        const char *path = std::getenv("TRIAEVUM_CAMERA_TRACE");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+      }();
+      if (cameraTrace != nullptr) {
+        std::fprintf(cameraTrace, "%llu %.3f %.3f %.3f\n",
+                     static_cast<unsigned long long>(snapshot->Serial),
+                     cameraSnapshot.At[0], cameraSnapshot.At[1], cameraSnapshot.At[2]);
+        std::fflush(cameraTrace);
       }
     }
     if (std::getenv("TRIAEVUM_VIEW_DEBUG")) {
@@ -5023,6 +5109,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         cameraSnapshot.Eye,
         cameraSnapshot.At,
         cameraSnapshot.CameraAvailable,
+        picaPresentationScheduler.NextVisualFrameSequence(),
     };
     if (titleRenderBackend != nullptr &&
         titleRenderBackend->PublishSceneView(view)) {
@@ -5063,7 +5150,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           bool present,
           const Fast::Oot3d::NativeFrameTemporalSample& temporalSample) {
         const auto started = std::chrono::steady_clock::now();
-        (void)api.PublishPicaFrameTemporalSample(temporalSample);
+        auto publishedSample = temporalSample;
+        publishedSample.ViewAdjustment = sample.ViewAdjustment;
+        publishedSample.ViewAdjustmentValid = sample.ViewAdjustmentValid;
+        (void)api.PublishPicaFrameTemporalSample(publishedSample);
         Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
         if (!picaPresentationScheduler.Execute(
                 api, sample, kVisualInterpolationRenderTargetNamespace, kind,
@@ -6390,6 +6480,70 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     }
     Oot3dNativeGame::NativeA32InputFrame inputFrame;
     phaseTiming.InputPollSeconds += SecondsSince(inputPhaseStart);
+    // Between frames (the renderer is idle; the guest runs after StartFrame).
+    if (manifest->Title.Id == "mm3d" && widescreenProjection.CaptureObject != 0U) {
+      // A capture converts next frame (+0x1D == 1): its RGB8 sources get the
+      // presented top screen read back, scaled to the native 240x400.
+      auto &memory = process.Memory();
+      const uint32_t object = widescreenProjection.CaptureObject;
+      uint8_t stage = 0, mode = 0;
+      static bool filled = false;
+      if (memory.Read8(object + 0x1DU, &stage) && stage == 1U) {
+        if (!filled) {
+          filled = true;
+          memory.Read8(object + 0x1CU, &mode);
+          Oot3d::Renderer::PicaPresentationStateSnapshot snapshot;
+          std::string error;
+          size_t written = 0;
+          if (!api.CapturePicaPresentationState(snapshot, &error)) {
+            std::fprintf(stderr, "[capture] readback failed: %s\n", error.c_str());
+          }
+          for (uint32_t slot = 0; slot < 2U; ++slot) {
+            uint32_t buffer = 0;
+            if (!memory.Read32(object + 0xCU + 4U * slot, &buffer) || buffer == 0U) continue;
+            const auto physical = picaMemoryView.TranslateGuest(buffer, 240U * 400U * 3U);
+            if (!physical) continue;
+            for (const auto &image : snapshot.DisplayImages) {
+              if (image.OutputPhysicalAddress != *physical || !image.Initialized || image.ImageWidth == 0U ||
+                  image.ImageHeight == 0U || image.ColorRgba8.size() < size_t{image.ImageWidth} * image.ImageHeight * 4U)
+                continue;
+              // 240 pixels per line, 400 lines, bytes B,G,R; each pixel the
+              // average of the image's pixels over it.
+              std::vector<uint8_t> native(240U * 400U * 3U);
+              for (uint32_t line = 0; line < 400U; ++line) {
+                const uint32_t y0 = line * image.ImageHeight / 400U;
+                const uint32_t y1 = std::max(y0 + 1U, (line + 1U) * image.ImageHeight / 400U);
+                for (uint32_t column = 0; column < 240U; ++column) {
+                  const uint32_t x0 = column * image.ImageWidth / 240U;
+                  const uint32_t x1 = std::max(x0 + 1U, (column + 1U) * image.ImageWidth / 240U);
+                  uint32_t sum[3] = {}, count = 0;
+                  for (uint32_t y = y0; y < y1; ++y)
+                    for (uint32_t x = x0; x < x1; ++x, ++count)
+                      for (uint32_t c = 0; c < 3U; ++c)
+                        sum[c] += image.ColorRgba8[(size_t{y} * image.ImageWidth + x) * 4U + c];
+                  uint8_t *pixel = &native[(line * 240U + column) * 3U];
+                  pixel[0] = static_cast<uint8_t>(sum[2] / count);
+                  pixel[1] = static_cast<uint8_t>(sum[1] / count);
+                  pixel[2] = static_cast<uint8_t>(sum[0] / count);
+                }
+              }
+              for (size_t offset = 0; offset < native.size(); offset += 4U) {
+                uint32_t word = 0;
+                std::memcpy(&word, &native[offset], sizeof(word));
+                memory.Write32(buffer + static_cast<uint32_t>(offset), word);
+              }
+              ++written;
+              std::fprintf(stderr, "[capture] mode %u buffer %08X image %ux%u\n", mode, buffer,
+                           image.ImageWidth, image.ImageHeight);
+              break;
+            }
+          }
+          if (written == 0U) std::fprintf(stderr, "[capture] mode %u: no presented image for its buffers\n", mode);
+        }
+      } else {
+        filled = false;
+      }
+    }
     const auto rendererFrameStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuRendererStart(CpuProbe::Phase::RendererStart);
     api.UpdateFramebufferParameters(0, width, height, 1, false, true, true,
@@ -7641,6 +7795,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 singleScreen.InsetBlend <= 0.0F && !singleScreen.LowerOverlay;
             const bool slotButtonsInMenu =
                 singleScreen.MergedMenu && (mm3dScreen == 4 || mm3dScreen == 6);
+            if (mm3dButtonLabels) mm3dButtonLabels->ClearSprites();
             if (mm3dSlotButtonsEnabled && hudLayer.has_value() &&
                 (slotButtonsInHud || slotButtonsInMenu)) {
               constexpr uint32_t kSpriteSize = 192U;
@@ -7649,27 +7804,73 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                   Fast::Oot3d::GraphicsSettingsRuntime::Instance().Snapshot().TexturePacks.Azahar;
               const auto style = Oot3dNativeGame::Mm3dButtonStyleFromSettings(
                   !texturePack.ButtonStyleDirectory.empty(), texturePack.ButtonStyleDirectory);
-              // The game's own button bubble, from the player's RomFS.
-              static const auto bubble = [&manifest]() -> std::optional<Oot3dNativeGame::Mm3dButtonRing> {
-                std::string ringError;
-                auto ring = Oot3dNativeGame::LoadMm3dButtonRing(manifest->RomFsImagePath,
-                                                                manifest->RomFsImageOffset,
-                                                                manifest->RomFsImageSize, &ringError);
-                if (!ring.has_value()) {
+              // The game's own button bubble, from the player's RomFS: the HD
+              // pack's version of its atlas when the pack has one (the game's
+              // 40 pixels blown up to the sprite's 192 were blurred next to
+              // the pack's sharp A/B buttons). Again on every pack change.
+              static const auto atlas = [&manifest]() -> std::optional<Oot3dNativeGame::Mm3dButtonAtlas> {
+                std::string atlasError;
+                auto loaded = Oot3dNativeGame::LoadMm3dButtonAtlas(manifest->RomFsImagePath,
+                                                                   manifest->RomFsImageOffset,
+                                                                   manifest->RomFsImageSize, &atlasError);
+                if (!loaded.has_value()) {
                   std::fprintf(stderr, "[hud] button bubble unavailable (%s): drawn rings instead\n",
-                               ringError.c_str());
+                               atlasError.c_str());
                 }
-                return ring;
+                return loaded;
               }();
+              static std::optional<Oot3dNativeGame::Mm3dButtonRing> bubble;
+              static std::pair<uint64_t, size_t> bubblePack{0U, 0U};  // generation, indexed textures
               static int uploadedStyle = -1;
-              if (uploadedStyle != static_cast<int>(style)) {
+              auto &texturePacks = ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance();
+              const auto packStatus = texturePacks.Snapshot();
+              if (atlas.has_value() &&
+                  bubblePack != std::pair<uint64_t, size_t>{packStatus.Generation, packStatus.IndexedTextures}) {
+                bubblePack = {packStatus.Generation, packStatus.IndexedTextures};
+                bubble.reset();
+                static const bool noHdBubble = std::getenv("TRIAEVUM_NO_HD_BUTTON_BUBBLE") != nullptr;
+                if (!noHdBubble && texturePack.LoadCustomTextures) {
+                  // The pack's hash is of the level-0 texels (ETC1A4: a byte each).
+                  const size_t levelBytes = static_cast<size_t>(atlas->Width) * atlas->Height;
+                  const auto replacement = texturePacks.ResolveAndMaybeDump(::Oot3d::Renderer::AzaharTextureRequest{
+                      .Width = static_cast<uint16_t>(atlas->Width),
+                      .Height = static_cast<uint16_t>(atlas->Height),
+                      .NativeFormat = 0x0DU,
+                      .MipLevel = 0U,
+                      .NativeBytes = std::span<const uint8_t>(atlas->Native.data(),
+                                                              std::min(levelBytes, atlas->Native.size())),
+                      .NativeRgba8 = std::span<const uint8_t>(atlas->Rgba),
+                  });
+                  if (replacement != nullptr && replacement->Rgba8 != nullptr)
+                    bubble = Oot3dNativeGame::Mm3dButtonRingFromAtlas(*replacement->Rgba8, replacement->Width,
+                                                                      replacement->Height);
+                  std::fprintf(stderr, "[hud] button bubble: %s\n",
+                               bubble.has_value()
+                                   ? ("HD pack " + std::to_string(replacement->Width) + "x" +
+                                      std::to_string(replacement->Height))
+                                         .c_str()
+                                   : (replacement != nullptr ? ("pack atlas unusable, the game's: " +
+                                                                replacement->SourcePath.string())
+                                                                   .c_str()
+                                                             : "the game's (not in the pack)"));
+                }
+                if (!bubble.has_value()) bubble = Oot3dNativeGame::Mm3dButtonRingFromAtlas(atlas->Rgba, atlas->Width,
+                                                                                            atlas->Height);
+                uploadedStyle = -1;  // the sprites again with this bubble
+              }
+              static uint32_t uploadedLabels = 0;  // F1 > Buttons revision
+              const uint32_t labelRevision = mm3dButtonLabels ? mm3dButtonLabels->Revision() : 0U;
+              if (uploadedStyle != static_cast<int>(style) || uploadedLabels != labelRevision) {
                 bool uploaded = true;
+                uploadedLabels = labelRevision;
                 for (int slot = 0; slot < 4 && uploaded; ++slot) {
                   const auto sprite = Oot3dNativeGame::Mm3dSpriteToFramebufferOrder(
                       Oot3dNativeGame::MakeMm3dHudButtonSprite(
                           kSpriteSize, Oot3dNativeGame::Mm3dHudButtonLabel(style, slot),
                           bubble.has_value() ? &*bubble : nullptr,
-                          Oot3dNativeGame::Mm3dHudButtonLabelColor(style, slot)),
+                          Oot3dNativeGame::Mm3dHudButtonLabelColor(style, slot),
+                          mm3dButtonLabels ? mm3dButtonLabels->Label(slot)
+                                           : Oot3dNativeGame::Mm3dButtonLabelLayout{}),
                       kSpriteSize);
                   uploaded = api.UploadPicaDisplayImage(kVisualInterpolationRenderTargetNamespace,
                                                         kSpriteAddress + static_cast<uint32_t>(slot) * 0x100U,
@@ -7699,6 +7900,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     Oot3d::Renderer::PicaPresentationMode::AlphaOverlay,
                     (centerX - 0.56F * size) / windowWidth, (centerY - 0.56F * size) / windowHeight,
                     size / windowWidth, size / windowHeight, static_cast<uint16_t>(kSpriteSize), true};
+                if (mm3dButtonLabels) {
+                  mm3dButtonLabels->SetSprite(slot, {placement.X, placement.Y, placement.Width, placement.Height},
+                                              Oot3dNativeGame::Mm3dHudButtonLabel(style, slot));
+                }
                 Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission sprite;
                 sprite.CompletionId = 1U;
                 sprite.InputPhysicalAddress = kSpriteAddress + static_cast<uint32_t>(slot) * 0x100U;
@@ -8436,6 +8641,58 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
       }
     }
+    {
+      // The author's thank-you message on the first launch: it closes only
+      // after 5 seconds, then never shows again (thanks_shown next to the
+      // config). Never in automated runs (input timeline or --max-seconds:
+      // tests, Setup's shader tour), nor with TRIAEVUM_NO_THANKS.
+      static const std::filesystem::path seenPath =
+          std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "thanks_shown";
+      static bool showThanks = [&] {
+        std::error_code ignored;
+        return launch.Host.InputTimelinePath.empty() && launch.Host.MaxSeconds <= 0.0 &&
+               std::getenv("TRIAEVUM_NO_THANKS") == nullptr && !std::filesystem::exists(seenPath, ignored);
+      }();
+      static std::optional<std::chrono::steady_clock::time_point> thanksSince;
+      if (showThanks) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!thanksSince.has_value()) thanksSince = now;
+        const double waited = std::chrono::duration<double>(now - *thanksSince).count();
+        const int secondsLeft = static_cast<int>(std::ceil(5.0 - waited));
+        const ImGuiViewport *viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5F,
+                                       viewport->Pos.y + viewport->Size.y * 0.5F),
+                                ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+        ImGui::SetNextWindowSize(ImVec2(std::min(viewport->Size.x * 0.9F, viewport->Size.y * 1.1F), 0.0F),
+                                 ImGuiCond_Always);
+        ImGui::SetNextWindowFocus();
+        ImGui::Begin("MM3D PC", nullptr,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+        ImGui::SetWindowFontScale(std::max(1.0F, viewport->Size.y / 380.0F));
+        ImGui::TextWrapped(
+            "Hello! Thank you very much for testing, sorry for interrupting but i would like to ask if you "
+            "could somehow spread this project around, i'm a single person working on this with only one AI "
+            "agent, i'd love to make this as enjoyable as possible for everyone, cheers! :D");
+        ImGui::Spacing();
+        bool close = false;
+        if (secondsLeft > 0) {
+          ImGui::BeginDisabled();
+          ImGui::Button(("OK (" + std::to_string(secondsLeft) + ")").c_str());
+          ImGui::EndDisabled();
+        } else {
+          close = ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                  ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown);
+        }
+        ImGui::End();
+        if (close) {
+          showThanks = false;
+          std::error_code ignored;
+          std::filesystem::create_directories(seenPath.parent_path(), ignored);
+          std::ofstream(seenPath) << "The thank-you message was shown.\n";
+        }
+      }
+    }
     phaseStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
     gui->EndDraw();
@@ -8569,6 +8826,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     ApplyWindowDemoFrameLimit(hostArgs, window, runFrameCount);
   }
   CpuProbe::Thread.Active = false;
+  if (processResult.Kind == Oot3dNativeGame::NativeA32ProcessRunKind::Terminated) {
+    std::fprintf(stderr, "oot3d_native_game: the game's process ended (all its threads exited)\n");
+  }
 
 #if defined(__SWITCH__)
   WriteSwitchBootStage(

@@ -1331,18 +1331,21 @@ bool GfxRenderingAPIVulkan::PublishSceneView(
         Oot3d::SceneViewRuntime::Instance().PublishPerspectiveCamera(
             view.GuestFunction, view.GuestReturnAddress,
             view.Left, view.Right, view.Bottom, view.Top,
-            view.NearPlane, view.FarPlane, view.Eye, view.At);
+            view.NearPlane, view.FarPlane, view.Eye, view.At, view.SourceFrame);
     } else {
         Oot3d::SceneViewRuntime::Instance().PublishPerspective(
             view.GuestFunction, view.GuestReturnAddress,
             view.Left, view.Right, view.Bottom, view.Top,
-            view.NearPlane, view.FarPlane);
+            view.NearPlane, view.FarPlane, view.SourceFrame);
     }
     return true;
 }
 
 bool GfxRenderingAPIVulkan::PublishPicaFrameTemporalSample(
     const ::Fast::Renderer3ds::PicaFrameTemporalSample& sample) {
+    Oot3d::SceneViewRuntime::Instance().SetPresentation(
+        sample.CurrentSourceFrameId,
+        sample.ViewAdjustmentValid ? std::optional(sample.ViewAdjustment) : std::nullopt);
     return mPicaSceneFrame.SetTemporalSample(sample);
 }
 
@@ -1629,6 +1632,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mGrassRenderedTargetsThisFrame.clear();
     mGrassInsertionAttemptedTargetsThisFrame.clear();
     mGrassWorldTargetsThisFrame.clear();
+    mGrassWorldViewportsThisFrame.clear();
     mDirectionalShadowInsertionAttemptedTargetsThisFrame.clear();
     mGrassSurfaceOccurrencesThisFrame.clear();
     mRigidMotionOccurrencesThisFrame.clear();
@@ -1732,8 +1736,39 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mAzaharConfiguredSettingsRevision =
             mFrameGraphicsSettingsRevision;
     }
+    // TRIAEVUM_TEXTURE_RELOAD_EVERY=<frames>: reloads the pack that often, a
+    // new generation as a button style change starts (leak tests).
+    static const long reloadEvery = [] {
+        const char* value = std::getenv("TRIAEVUM_TEXTURE_RELOAD_EVERY");
+        return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+    }();
+    if (reloadEvery > 0 && mFrameCounter > 0U && mFrameCounter % static_cast<uint64_t>(reloadEvery) == 0U)
+        azaharTexturePacks.Reload();
     mFrameAzaharTextureGeneration =
         azaharTexturePacks.Generation();
+    // Every pack change (a button style, the pack on or off, Reload) starts a
+    // generation and every sampled texture is created again under it; the
+    // old generation's could never be looked up again but kept their images:
+    // switching button styles with an HD pack ran out of video memory in two
+    // minutes. They are destroyed once the GPU is idle (a settings change,
+    // so the stall is once). From coccofresco/TriAevum e91ee5e4.
+    static const bool keepOldGenerations = std::getenv("TRIAEVUM_KEEP_OLD_TEXTURES") != nullptr;
+    if (!keepOldGenerations && mNativePicaTexturesGeneration != mFrameAzaharTextureGeneration) {
+        bool waited = false;
+        for (auto texture = mNativePicaTextures.begin(); texture != mNativePicaTextures.end();) {
+            if (texture->first.ReplacementGeneration == mFrameAzaharTextureGeneration) {
+                ++texture;
+                continue;
+            }
+            if (!waited) {
+                CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(texture pack generation)");
+                waited = true;
+            }
+            DestroyTexture(texture->second);
+            texture = mNativePicaTextures.erase(texture);
+        }
+        mNativePicaTexturesGeneration = mFrameAzaharTextureGeneration;
+    }
     // The custom textures the previous frame started decoding (a new area's,
     // in parallel) are waited for, so they appear at once instead of over
     // half a second; that frame drew them once with the original textures.
@@ -1914,6 +1949,39 @@ void GfxRenderingAPIVulkan::StartFrame() {
                  mInFlightFences[mCurrentFrame], VkFence{VK_NULL_HANDLE});
     mScanoutProbe.Consume(mCurrentFrame);
     ReleaseRetiredNativePicaGeometryBuffers(mCurrentFrame);
+    // Textures the game stopped sampling stayed for the whole session: VRAM
+    // grew ~60 MB per area visited with an HD pack (2.2 -> 3.7 GB over 24
+    // areas) until it ran out on a long session (coccofresco/TriAevum #98).
+    // One unused for TRIAEVUM_TEXTURE_UNUSED_SECONDS (default 120, 0 = keep
+    // all) is destroyed; no frame in flight samples it any more.
+    {
+        static const auto clockStart = std::chrono::steady_clock::now();
+        static const long unusedSeconds = [] {
+            const char* value = std::getenv("TRIAEVUM_TEXTURE_UNUSED_SECONDS");
+            return value != nullptr ? std::strtol(value, nullptr, 10) : 120L;
+        }();
+        mTextureClockSeconds = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - clockStart).count());
+        if (unusedSeconds > 0 && mTextureClockSeconds != mTextureEvictionCheckedSecond) {
+            mTextureEvictionCheckedSecond = mTextureClockSeconds;
+            size_t evicted = 0;
+            for (auto texture = mNativePicaTextures.begin(); texture != mNativePicaTextures.end();) {
+                const auto& record = texture->second;
+                if (record.ImageLayout == VK_IMAGE_LAYOUT_GENERAL || record.CustomReplacementPending ||
+                    mTextureClockSeconds - record.LastUsedSecond <= static_cast<uint32_t>(unusedSeconds)) {
+                    ++texture;
+                    continue;
+                }
+                DestroyTexture(texture->second);
+                texture = mNativePicaTextures.erase(texture);
+                ++evicted;
+            }
+            static const bool trace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
+            if (trace && evicted != 0U)
+                std::fprintf(stderr, "TRIAEVUM_TEXTURE_EVICT second=%u evicted=%zu kept=%zu\n", mTextureClockSeconds,
+                             evicted, mNativePicaTextures.size());
+        }
+    }
     auto& frame = mFrameResources[mCurrentFrame];
     mCompletedNativePicaIds.insert(mCompletedNativePicaIds.end(),
                                    frame.NativePicaCompletionIds.begin(),
@@ -4797,6 +4865,8 @@ void GfxRenderingAPIVulkan::CreateSwapchainResources() {
     }
 
     mDepthFormat = FindDepthFormat();
+    std::fprintf(stderr, "TRIAEVUM_DEPTH_FORMAT vk=%d stencil=%d\n", static_cast<int>(mDepthFormat),
+                 HasStencil(mDepthFormat) ? 1 : 0);
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = mSwapchainFormat;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;

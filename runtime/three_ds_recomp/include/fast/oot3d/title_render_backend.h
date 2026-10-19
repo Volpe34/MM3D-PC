@@ -28,6 +28,10 @@ struct TitleSceneViewSubmission {
     std::array<float, 3> Eye{};
     std::array<float, 3> At{};
     bool CameraAvailable = true;
+    // The title's source frame (visual frame sequence) whose draws use this
+    // view; 0 when unknown. Lets the renderer pair a presentation sample with
+    // its own frame's camera when it presents behind the newest frame.
+    uint64_t SourceFrame = 0;
 };
 
 // Optional renderer hooks owned by the OOT3D title adapter. Other Nintendo

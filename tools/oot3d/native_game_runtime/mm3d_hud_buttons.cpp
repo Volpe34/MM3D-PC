@@ -175,8 +175,8 @@ std::array<float, 4> SampleBicubic(const std::vector<float>& premultiplied, uint
 
 }  // namespace
 
-std::optional<Mm3dButtonRing> LoadMm3dButtonRing(const std::filesystem::path& romfs, uint64_t offset,
-                                                 uint64_t size, std::string* error) {
+std::optional<Mm3dButtonAtlas> LoadMm3dButtonAtlas(const std::filesystem::path& romfs, uint64_t offset,
+                                                   uint64_t size, std::string* error) {
     try {
         for (const auto& gar : ReadRomFsFiles(romfs, offset, size, "Joker.Main.Play.gar")) {
             const auto ctxb = GarFile(gar, "hud_patrs00_action_text.ctxb");
@@ -191,117 +191,148 @@ std::optional<Mm3dButtonRing> LoadMm3dButtonRing(const std::filesystem::path& ro
                 length > ctxb->size() - at) {
                 continue;
             }
-            std::vector<uint8_t> atlas;
-            if (!::Oot3d::Renderer::DecodePicaTextureRgba8(
-                    0x0DU /* ETC1A4 */, width, height,
-                    std::span<const uint8_t>(ctxb->data() + at, length), atlas, error)) {
+            Mm3dButtonAtlas atlas;
+            atlas.Width = width;
+            atlas.Height = height;
+            atlas.Native.assign(ctxb->data() + at, ctxb->data() + at + length);
+            if (!::Oot3d::Renderer::DecodePicaTextureRgba8(0x0DU /* ETC1A4 */, width, height,
+                                                           std::span<const uint8_t>(atlas.Native), atlas.Rgba,
+                                                           error)) {
                 continue;
             }
-            // The B button's bubble: 40 x 40 at (46, 0), its letter on top.
-            constexpr uint32_t kSize = 40U, kLeft = 46U;
-            Mm3dButtonRing ring;
-            ring.Size = kSize;
-            ring.CenterX = 19.0F;
-            ring.CenterY = 19.5F;
-            ring.Radius = 17.6F;
-            ring.Rgba.resize(kSize * kSize * 4U);
-            for (uint32_t y = 0; y < kSize; ++y) {
-                std::copy_n(&atlas[(static_cast<size_t>(y) * width + kLeft) * 4U], kSize * 4U,
-                            &ring.Rgba[static_cast<size_t>(y) * kSize * 4U]);
-            }
-            const auto pixel = [&](uint32_t x, uint32_t y) { return &ring.Rgba[(y * kSize + x) * 4U]; };
-            // (A bubble: the ring solid at its left, the middle see-through.)
-            if (pixel(3, 19)[3] < 160U || pixel(19, 19)[3] > 200U) continue;
-            // The letter: colored or dark pixels at the top middle, and around them.
-            std::vector<uint8_t> letter(kSize * kSize, 0U), mask(kSize * kSize, 0U);
-            for (uint32_t y = 0; y <= 13U; ++y) {
-                for (uint32_t x = 0; x < kSize; ++x) {
-                    if (std::fabs(static_cast<float>(x) + 0.5F - ring.CenterX) > 10.0F) continue;
-                    const uint8_t* p = pixel(x, y);
-                    const int chroma = std::max({p[0], p[1], p[2]}) - std::min({p[0], p[1], p[2]});
-                    letter[y * kSize + x] = (chroma > 22 && p[3] > 40U) ||
-                                            (std::max({p[0], p[1], p[2]}) < 70 && p[3] > 60U) || y <= 2U;
-                }
-            }
-            for (uint32_t y = 0; y < kSize; ++y) {
-                for (uint32_t x = 0; x < kSize; ++x) {
-                    for (int dy = -1; dy <= 1 && !mask[y * kSize + x]; ++dy) {
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            const int nx = static_cast<int>(x) + dx, ny = static_cast<int>(y) + dy;
-                            if (nx >= 0 && ny >= 0 && nx < static_cast<int>(kSize) && ny < static_cast<int>(kSize) &&
-                                letter[static_cast<size_t>(ny) * kSize + static_cast<size_t>(nx)]) {
-                                mask[y * kSize + x] = 1U;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            // Painted from the ring around it: the nearest unmasked points at
-            // the same distance from the center, on both sides.
-            const auto masked = [&](int x, int y) {
-                for (int dy = -1; dy <= 1; ++dy)
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        const int nx = x + dx, ny = y + dy;
-                        if (nx >= 0 && ny >= 0 && nx < static_cast<int>(kSize) && ny < static_cast<int>(kSize) &&
-                            mask[static_cast<size_t>(ny) * kSize + static_cast<size_t>(nx)])
-                            return true;
-                    }
-                return false;
-            };
-            const auto source = ring.Rgba;
-            const auto bilinear = [&](float fx, float fy) {
-                const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
-                const float tx = fx - static_cast<float>(x0), ty = fy - static_cast<float>(y0);
-                std::array<float, 4> sum{};
-                for (int j = 0; j < 2; ++j)
-                    for (int i = 0; i < 2; ++i) {
-                        const int x = std::clamp(x0 + i, 0, static_cast<int>(kSize) - 1);
-                        const int y = std::clamp(y0 + j, 0, static_cast<int>(kSize) - 1);
-                        const float w = (i ? tx : 1.0F - tx) * (j ? ty : 1.0F - ty);
-                        const uint8_t* p = &source[(static_cast<size_t>(y) * kSize + static_cast<size_t>(x)) * 4U];
-                        const float a = p[3] / 255.0F;
-                        for (int c = 0; c < 3; ++c) sum[static_cast<size_t>(c)] += p[c] * a * w;
-                        sum[3] += a * w;
-                    }
-                return sum;
-            };
-            for (uint32_t y = 0; y < kSize; ++y) {
-                for (uint32_t x = 0; x < kSize; ++x) {
-                    if (!mask[y * kSize + x]) continue;
-                    const float dx = static_cast<float>(x) + 0.5F - ring.CenterX;
-                    const float dy = static_cast<float>(y) + 0.5F - ring.CenterY;
-                    std::array<float, 4> total{};
-                    float weights = 0.0F;
-                    for (const float sign : {1.0F, -1.0F}) {
-                        for (int k = 1; k < 60; ++k) {
-                            const float angle = sign * 3.0F * static_cast<float>(k) * 3.14159265F / 180.0F;
-                            const float c = std::cos(angle), s = std::sin(angle);
-                            const float sx = ring.CenterX + dx * c - dy * s - 0.5F;
-                            const float sy = ring.CenterY + dx * s + dy * c - 0.5F;
-                            if (masked(static_cast<int>(std::lround(sx)), static_cast<int>(std::lround(sy)))) continue;
-                            const auto value = bilinear(sx, sy);
-                            const float w = 1.0F / static_cast<float>(k);
-                            for (size_t i = 0; i < 4; ++i) total[i] += value[i] * w;
-                            weights += w;
-                            break;
-                        }
-                    }
-                    uint8_t* p = pixel(x, y);
-                    const float a = weights > 0.0F ? total[3] / weights : 0.0F;
-                    for (int c = 0; c < 3; ++c)
-                        p[c] = a > 0.0F ? static_cast<uint8_t>(std::clamp(std::lround(total[static_cast<size_t>(c)] / weights / a), 0L, 255L))
-                                        : 0U;
-                    p[3] = static_cast<uint8_t>(std::clamp(std::lround(a * 255.0F), 0L, 255L));
-                }
-            }
-            return ring;
+            return atlas;
         }
         if (error != nullptr) *error = "no HUD atlas with the button bubble in the RomFS";
     } catch (const std::exception& exception) {
         if (error != nullptr) *error = exception.what();
     }
     return std::nullopt;
+}
+
+std::optional<Mm3dButtonRing> Mm3dButtonRingFromAtlas(const std::vector<uint8_t>& rgba, uint32_t width,
+                                                      uint32_t height) {
+    // An HD pack's atlas is the game's 512 x 256 scaled: every place scales.
+    const float scale = static_cast<float>(width) / 512.0F;
+    if (width == 0U || height == 0U || rgba.size() < static_cast<size_t>(width) * height * 4U ||
+        std::abs(static_cast<float>(height) / 256.0F - scale) > 0.01F * scale)
+        return std::nullopt;
+    // The B button's bubble: 40 x 40 at (46, 0), its letter on top.
+    const uint32_t kSize = static_cast<uint32_t>(std::lround(40.0F * scale)),
+                   kLeft = static_cast<uint32_t>(std::lround(46.0F * scale));
+    if (kSize == 0U || kLeft + kSize > width || kSize > height) return std::nullopt;
+    Mm3dButtonRing ring;
+    ring.Size = kSize;
+    ring.CenterX = 19.0F * scale;
+    ring.CenterY = 19.5F * scale;
+    ring.Radius = 17.6F * scale;
+    ring.Rgba.resize(kSize * kSize * 4U);
+    for (uint32_t y = 0; y < kSize; ++y) {
+        std::copy_n(&rgba[(static_cast<size_t>(y) * width + kLeft) * 4U], kSize * 4U,
+                    &ring.Rgba[static_cast<size_t>(y) * kSize * 4U]);
+    }
+    const auto pixel = [&](uint32_t x, uint32_t y) { return &ring.Rgba[(y * kSize + x) * 4U]; };
+    // (A bubble: the ring solid at its left, the middle see-through.)
+    // (An HD pack's ring is a thin line: the most opaque point across it.)
+    uint8_t ringAlpha = 0;
+    for (uint32_t x = static_cast<uint32_t>(1.0F * scale); x <= static_cast<uint32_t>(7.0F * scale); ++x)
+        ringAlpha = std::max(ringAlpha, pixel(x, static_cast<uint32_t>(19.0F * scale))[3]);
+    if (ringAlpha < 160U || pixel(static_cast<uint32_t>(19.0F * scale), static_cast<uint32_t>(19.0F * scale))[3] > 200U)
+        return std::nullopt;
+    // The letter: colored or dark pixels at the top middle, and around them.
+    std::vector<uint8_t> letter(kSize * kSize, 0U), mask(kSize * kSize, 0U);
+    const uint32_t letterBottom = static_cast<uint32_t>(13.0F * scale), letterTop = static_cast<uint32_t>(2.0F * scale);
+    const int grow = std::max(1, static_cast<int>(std::lround(scale)));
+    for (uint32_t y = 0; y <= letterBottom; ++y) {
+        for (uint32_t x = 0; x < kSize; ++x) {
+            if (std::fabs(static_cast<float>(x) + 0.5F - ring.CenterX) > 10.0F * scale) continue;
+            const uint8_t* p = pixel(x, y);
+            const int chroma = std::max({p[0], p[1], p[2]}) - std::min({p[0], p[1], p[2]});
+            letter[y * kSize + x] = (chroma > 22 && p[3] > 40U) ||
+                                    (std::max({p[0], p[1], p[2]}) < 70 && p[3] > 60U) || y <= letterTop;
+        }
+    }
+    for (uint32_t y = 0; y < kSize; ++y) {
+        for (uint32_t x = 0; x < kSize; ++x) {
+            for (int dy = -grow; dy <= grow && !mask[y * kSize + x]; ++dy) {
+                for (int dx = -grow; dx <= grow; ++dx) {
+                    const int nx = static_cast<int>(x) + dx, ny = static_cast<int>(y) + dy;
+                    if (nx >= 0 && ny >= 0 && nx < static_cast<int>(kSize) && ny < static_cast<int>(kSize) &&
+                        letter[static_cast<size_t>(ny) * kSize + static_cast<size_t>(nx)]) {
+                        mask[y * kSize + x] = 1U;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Painted from the ring around it: the nearest unmasked points at
+    // the same distance from the center, on both sides.
+    const auto masked = [&](int x, int y) {
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int nx = x + dx, ny = y + dy;
+                if (nx >= 0 && ny >= 0 && nx < static_cast<int>(kSize) && ny < static_cast<int>(kSize) &&
+                    mask[static_cast<size_t>(ny) * kSize + static_cast<size_t>(nx)])
+                    return true;
+            }
+        return false;
+    };
+    const auto source = ring.Rgba;
+    const auto bilinear = [&](float fx, float fy) {
+        const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+        const float tx = fx - static_cast<float>(x0), ty = fy - static_cast<float>(y0);
+        std::array<float, 4> sum{};
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 2; ++i) {
+                const int x = std::clamp(x0 + i, 0, static_cast<int>(kSize) - 1);
+                const int y = std::clamp(y0 + j, 0, static_cast<int>(kSize) - 1);
+                const float w = (i ? tx : 1.0F - tx) * (j ? ty : 1.0F - ty);
+                const uint8_t* p = &source[(static_cast<size_t>(y) * kSize + static_cast<size_t>(x)) * 4U];
+                const float a = p[3] / 255.0F;
+                for (int c = 0; c < 3; ++c) sum[static_cast<size_t>(c)] += p[c] * a * w;
+                sum[3] += a * w;
+            }
+        return sum;
+    };
+    for (uint32_t y = 0; y < kSize; ++y) {
+        for (uint32_t x = 0; x < kSize; ++x) {
+            if (!mask[y * kSize + x]) continue;
+            const float dx = static_cast<float>(x) + 0.5F - ring.CenterX;
+            const float dy = static_cast<float>(y) + 0.5F - ring.CenterY;
+            std::array<float, 4> total{};
+            float weights = 0.0F;
+            for (const float sign : {1.0F, -1.0F}) {
+                for (int k = 1; k < 60; ++k) {
+                    const float angle = sign * 3.0F * static_cast<float>(k) * 3.14159265F / 180.0F;
+                    const float c = std::cos(angle), s = std::sin(angle);
+                    const float sx = ring.CenterX + dx * c - dy * s - 0.5F;
+                    const float sy = ring.CenterY + dx * s + dy * c - 0.5F;
+                    if (masked(static_cast<int>(std::lround(sx)), static_cast<int>(std::lround(sy)))) continue;
+                    const auto value = bilinear(sx, sy);
+                    const float w = 1.0F / static_cast<float>(k);
+                    for (size_t i = 0; i < 4; ++i) total[i] += value[i] * w;
+                    weights += w;
+                    break;
+                }
+            }
+            uint8_t* p = pixel(x, y);
+            const float a = weights > 0.0F ? total[3] / weights : 0.0F;
+            for (int c = 0; c < 3; ++c)
+                p[c] = a > 0.0F ? static_cast<uint8_t>(std::clamp(std::lround(total[static_cast<size_t>(c)] / weights / a), 0L, 255L))
+                                : 0U;
+            p[3] = static_cast<uint8_t>(std::clamp(std::lround(a * 255.0F), 0L, 255L));
+        }
+    }
+    return ring;
+}
+
+std::optional<Mm3dButtonRing> LoadMm3dButtonRing(const std::filesystem::path& romfs, uint64_t offset,
+                                                 uint64_t size, std::string* error) {
+    const auto atlas = LoadMm3dButtonAtlas(romfs, offset, size, error);
+    if (!atlas.has_value()) return std::nullopt;
+    auto ring = Mm3dButtonRingFromAtlas(atlas->Rgba, atlas->Width, atlas->Height);
+    if (!ring.has_value() && error != nullptr) *error = "no button bubble in the HUD atlas";
+    return ring;
 }
 
 Mm3dButtonStyle Mm3dButtonStyleFromSettings(bool customTextures, std::string_view directory) {
@@ -337,9 +368,38 @@ std::array<uint8_t, 3> Mm3dHudButtonLabelColor(Mm3dButtonStyle style, int slot) 
     return {245, 214, 64};
 }
 
+namespace {
+// The label's geometry in sprite fractions (size 1).
+struct LabelMetrics {
+    float Left, Top, Height, Width, Stroke, Outline;  // Width: in glyph-box heights
+};
+LabelMetrics MeasureLabel(std::string_view label, const Mm3dButtonLabelLayout& layout, float s) {
+    float width = 0.0F;
+    size_t count = 0;
+    for (const char c : label) {
+        width += GlyphFor(c).Width + (count++ > 0 ? 0.22F : 0.0F);
+    }
+    const float scale = std::clamp(layout.Scale, 0.2F, 4.0F);
+    const float height = 0.24F * s * scale;  // glyph box height in pixels
+    const float stroke = std::max(1.5F, 0.06F * height * 2.2F);
+    const float outline = stroke * 0.55F;
+    return {0.04F * s + outline + layout.OffsetX * s, 0.03F * s + outline + layout.OffsetY * s, height, width,
+            stroke, outline};
+}
+}  // namespace
+
+std::array<float, 4> Mm3dHudButtonLabelBox(std::string_view label, const Mm3dButtonLabelLayout& layout) {
+    constexpr float s = 192.0F;  // the sprite's size (strokes have a pixel minimum)
+    const auto m = MeasureLabel(label, layout, s);
+    const float pad = m.Stroke * 0.5F + m.Outline;
+    return {(m.Left - pad) / s, (m.Top - pad) / s, (m.Left + m.Width * m.Height + pad) / s,
+            (m.Top + m.Height + pad) / s};
+}
+
 std::vector<uint8_t> MakeMm3dHudButtonSprite(uint32_t size, std::string_view label,
                                              const Mm3dButtonRing* bubble,
-                                             std::array<uint8_t, 3> labelColor) {
+                                             std::array<uint8_t, 3> labelColor,
+                                             const Mm3dButtonLabelLayout& layout) {
     std::vector<uint8_t> rgba(static_cast<size_t>(size) * size * 4U, 0U);
     const float s = static_cast<float>(size);
     const float cx = 0.56F * s, cy = 0.56F * s, radius = 0.42F * s, ring = std::max(1.5F, 0.035F * s);
@@ -387,16 +447,12 @@ std::vector<uint8_t> MakeMm3dHudButtonSprite(uint32_t size, std::string_view lab
     }
     // Label: yellow strokes with a dark outline, in the top left corner.
     std::vector<Glyph> glyphs;
-    float width = 0.0F;
-    for (const char c : label) {
-        glyphs.push_back(GlyphFor(c));
-        width += glyphs.back().Width + (glyphs.size() > 1 ? 0.22F : 0.0F);
-    }
+    for (const char c : label) glyphs.push_back(GlyphFor(c));
     if (glyphs.empty()) return rgba;
-    const float height = 0.24F * s;                      // glyph box height in pixels
-    const float stroke = std::max(1.5F, 0.06F * height * 2.2F);
-    const float outline = stroke * 0.55F;
-    const float left = 0.04F * s + outline, top = 0.03F * s + outline;
+    const auto metrics = MeasureLabel(label, layout, s);
+    const float width = metrics.Width, height = metrics.Height;
+    const float stroke = metrics.Stroke, outline = metrics.Outline;
+    const float left = metrics.Left, top = metrics.Top;
     std::vector<Segment> segments;
     float pen = 0.0F;
     for (const auto& glyph : glyphs) {
@@ -406,10 +462,12 @@ std::vector<uint8_t> MakeMm3dHudButtonSprite(uint32_t size, std::string_view lab
         }
         pen += glyph.Width + 0.22F;
     }
-    const uint32_t maxX = std::min<uint32_t>(size, static_cast<uint32_t>(left + width * height + 2 * outline + 2));
-    const uint32_t maxY = std::min<uint32_t>(size, static_cast<uint32_t>(top + height + 2 * outline + 2));
-    for (uint32_t y = 0; y < maxY; ++y) {
-        for (uint32_t x = 0; x < maxX; ++x) {
+    const float reach = stroke * 0.5F + outline + 2.0F;
+    const auto bound = [&](float v) { return static_cast<uint32_t>(std::clamp(v, 0.0F, s)); };
+    const uint32_t minX = bound(left - reach), maxX = bound(left + width * height + reach);
+    const uint32_t minY = bound(top - reach), maxY = bound(top + height + reach);
+    for (uint32_t y = minY; y < maxY; ++y) {
+        for (uint32_t x = minX; x < maxX; ++x) {
             float d = 1.0e9F;
             for (const auto& segment : segments) d = std::min(d, DistanceToSegment(x + 0.5F, y + 0.5F, segment));
             const float inner = std::clamp(stroke * 0.5F + 0.5F - d, 0.0F, 1.0F);

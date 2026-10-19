@@ -4,6 +4,7 @@
 
 #include "oot3d_native_pica_vulkan_plan.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -64,6 +65,11 @@ struct Oot3dPicaVisualFrameViewSample {
     size_t InterpolatedDraws = 0;
     size_t InterpolatedPerInstanceVertexDraws = 0;
     size_t InterpolatedPerVertexDraws = 0;
+    // The view-space transform applied to the current frame's world draws for
+    // this in-between view (row-major 3x4): in-between model-view = A * current.
+    // Effects anchored with the current camera apply it to stay with the scenery.
+    std::array<float, 12> ViewAdjustment{};
+    bool ViewAdjustmentValid = false;
 };
 
 struct Oot3dPicaVisualFrameAccumulatorState {
@@ -196,6 +202,7 @@ class Oot3dPicaVisualFrameAccumulator final {
     std::optional<Oot3dPicaVisualFrame>
     Finish(const Oot3dPicaDisplayTransferSubmission& topTransfer, bool allowTransferOnly = false);
     size_t PendingDrawCount() const;
+    uint64_t NextSequence() const noexcept { return mNextSequence; }
     Oot3dPicaVisualFrameAccumulatorState CaptureState() const;
     bool RestoreState(Oot3dPicaVisualFrameAccumulatorState state);
 

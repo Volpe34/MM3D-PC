@@ -30,6 +30,9 @@ struct PicaPerspectiveCameraState {
     std::array<float, 3> Eye{};
     std::array<float, 3> At{};
     std::array<float, 16> WorldToClip{};
+    // Column-major world-to-view matching WorldToClip, including the current
+    // presentation's view adjustment (interpolated in-between views).
+    std::array<float, 16> WorldToView{};
     bool CameraAvailable = false;
 };
 

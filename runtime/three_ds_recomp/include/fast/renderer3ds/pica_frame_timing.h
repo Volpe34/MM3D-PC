@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -74,6 +75,11 @@ struct PicaFrameTemporalSample {
     float SampleDeltaSeconds = 0.0F;
     bool Synthetic = false;
     bool HistoryReset = false;
+    // Row-major 3x4 view-space transform the title applied to the current
+    // source frame's world draws for this sample (in-between view = A * view).
+    // Effects that anchor with the published camera apply it as well.
+    std::array<float, 12> ViewAdjustment{};
+    bool ViewAdjustmentValid = false;
 
     [[nodiscard]] bool Available() const noexcept {
         if (SchemaVersion != kPicaFrameTemporalSampleSchemaVersion ||

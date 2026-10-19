@@ -117,7 +117,7 @@ class AzaharTexturePackRuntime final {
     [[nodiscard]] AzaharTextureResolveResult
     ResolveOrQueue(const AzaharTextureRequest& request);
     [[nodiscard]] AzaharTextureResolveResult
-    PollQueued(uint64_t nativeHash) const;
+    PollQueued(uint64_t nativeHash, std::span<const uint8_t> nativeRgba8 = {}) const;
     [[nodiscard]] AzaharTexturePackStatus Snapshot() const;
     [[nodiscard]] uint64_t Generation() const;
 

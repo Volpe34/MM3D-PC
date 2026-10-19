@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <cstdio>
 #include <cstdlib>
@@ -760,6 +761,9 @@ struct VisualDrawMatching {
     std::vector<ModelMotion> Motions;
     std::vector<uint32_t> MotionByCurrent;  // index into Motions, or none
     std::vector<PoseTransition> Poses;
+    // Previous poses made up for models new in view (D * current: still in
+    // the world), kept for the transitions pointing at them.
+    std::deque<Oot3dPicaModelPose> StillPoses;
     std::vector<uint32_t> PoseOrder;  // carriers before what they hold
     std::vector<uint32_t> PoseByCurrent;  // index into Poses, or none
     // A model's parts (meshes) drawn in one frame only (the game switched
@@ -1352,7 +1356,49 @@ VisualDrawMatching BuildVisualDrawMatching(
         // The camera is the average of the agreeing samples, not one of them: a
         // single sample carried its own error, so unpaired scenery (placed with
         // it) wobbled slightly against the paired draws.
-        if (bestVotes > 0U) {
+        // The loose agreement (0.02 per entry, ~1 degree) also took in Link's
+        // parts while the camera followed him: the average leaned 0.2-0.8
+        // degrees toward them and far scenery (the field, a mountain 2000+
+        // units away) was 5-60 units off in between frames. Static scenery
+        // agrees on the camera to float precision: the average is over the
+        // largest tight group inside the winner's agreement, when it has 4+.
+        static const bool looseAverage = std::getenv("TRIAEVUM_LOOSE_CAMERA_AVERAGE") != nullptr;
+        const auto tight = [](const Affine34& left, const Affine34& right) {
+            for (size_t row = 0; row < 3U; ++row) {
+                for (size_t column = 0; column < 3U; ++column)
+                    if (std::abs(left[row][column] - right[row][column]) > 0.0015F) return false;
+                if (std::abs(left[row][3] - right[row][3]) > 0.25F + 0.001F * std::abs(left[row][3])) return false;
+            }
+            return true;
+        };
+        bool tightAverage = false;
+        if (bestVotes > 0U && !looseAverage) {
+            const Affine34 winner = matching.CameraDelta;
+            size_t bestTight = 0;
+            const Affine34* center = nullptr;
+            for (const auto& candidate : candidates) {
+                if (!SimilarAffine(winner, candidate)) continue;
+                const size_t votes = static_cast<size_t>(std::count_if(
+                    candidates.begin(), candidates.end(), [&](const Affine34& other) { return tight(candidate, other); }));
+                if (votes > bestTight) { bestTight = votes; center = &candidate; }
+            }
+            if (center != nullptr && bestTight >= 4U) {
+                const Affine34 middle = *center;
+                Affine34 sum{};
+                size_t count = 0;
+                for (const auto& candidate : candidates) {
+                    if (!tight(middle, candidate)) continue;
+                    for (size_t row = 0; row < 3U; ++row)
+                        for (size_t column = 0; column < 4U; ++column) sum[row][column] += candidate[row][column];
+                    ++count;
+                }
+                for (size_t row = 0; row < 3U; ++row)
+                    for (size_t column = 0; column < 4U; ++column)
+                        matching.CameraDelta[row][column] = sum[row][column] / static_cast<float>(count);
+                tightAverage = true;
+            }
+        }
+        if (bestVotes > 0U && !tightAverage) {
             const Affine34 winner = matching.CameraDelta;
             Affine34 sum{};
             size_t count = 0;
@@ -1403,14 +1449,25 @@ VisualDrawMatching BuildVisualDrawMatching(
     // A fast camera turn (LT recentring, quick swings: 20-50 degrees in one
     // game frame) blended linearly pulled the whole scene toward the camera
     // in the in-between frames (6-10% at 30-50 degrees): those frames move
-    // the views as a rigid camera motion instead. Slow turns keep the linear
-    // blend (the same at the game frames themselves).
+    // the views as a rigid camera motion instead.
+    // Slow turns too. Below the threshold a skinned room (Clock Town's ground
+    // and walls are one posed model) was blended bone by bone in the view:
+    // its bone turned about its own origin, far from the ground, so the
+    // near ground was 0.5 (p95 1.6) game frames off its path in between
+    // frames and covered 25-35% of each step there, the rest in the next:
+    // it shook while the camera was nudged (1-5 degrees per game frame).
+    // With the camera taken out first every still bone stays put.
+    // TRIAEVUM_RIGID_CAMERA_MIN_DEGREES=5 restores the old threshold.
     if (matching.CameraDeltaValid) {
         static const bool forced = std::getenv("TRIAEVUM_RIGID_CAMERA") != nullptr;
         static const bool linearOnly = std::getenv("TRIAEVUM_LINEAR_CAMERA") != nullptr;
+        static const float minimumDegrees = [] {
+            const char* value = std::getenv("TRIAEVUM_RIGID_CAMERA_MIN_DEGREES");
+            return value != nullptr ? std::strtof(value, nullptr) : 0.0F;
+        }();
         const auto& d = matching.CameraDelta;
         const float angle = std::acos(std::clamp((d[0][0] + d[1][1] + d[2][2] - 1.0F) * 0.5F, -1.0F, 1.0F));
-        matching.RigidCamera = !linearOnly && (forced || angle > 5.0F * 0.0174533F);
+        matching.RigidCamera = !linearOnly && (forced || angle >= minimumDegrees * 0.0174533F);
     }
     static const bool orderPairs = std::getenv("TRIAEVUM_ORDER_PAIRS") != nullptr;
     // Left unpaired on purpose (not re-paired below).
@@ -2240,7 +2297,83 @@ void InterpolateRotatedMatrices(const Oot3dPicaVertexUniformState& previous,
     }
 }
 
+Affine34 PartialCameraDeltaPivot(const Affine34& d, float w);
+
+// The camera change D applied for a fraction w, as a screw motion: rotation
+// by w of D's angle about D's own rotation axis line, plus w of the slide
+// along it. Orbiting Link the axis passes through him (the exact arc);
+// walking while the camera turns a little it is the far centre of that
+// turn (a wide arc, nearly a line). The older pivot, forced onto the view
+// axis, exploded for small turns with motion (pivot thousands of units
+// out: the scenery jumped back and forth in between frames while walking).
+// TRIAEVUM_PIVOT_CAMERA=1 restores it.
 Affine34 PartialCameraDelta(const Affine34& d, float w) {
+    static const bool pivot = std::getenv("TRIAEVUM_PIVOT_CAMERA") != nullptr;
+    if (pivot) return PartialCameraDeltaPivot(d, w);
+    Affine34 result{};
+    for (size_t row = 0; row < 3U; ++row) result[row][row] = 1.0F;
+    if (w <= 0.0F) return result;
+    std::array<std::array<double, 3>, 3> r{};
+    std::array<double, 3> t{};
+    for (size_t row = 0; row < 3U; ++row) {
+        for (size_t column = 0; column < 3U; ++column) r[row][column] = d[row][column];
+        t[row] = d[row][3];
+    }
+    std::array<double, 3> axis{r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]};
+    const double twiceSine = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    const double angle = std::atan2(0.5 * twiceSine, 0.5 * (r[0][0] + r[1][1] + r[2][2] - 1.0));
+    if (!(twiceSine > 1.0e-9) || !(angle > 1.0e-7)) {
+        // No turn: the blend of the matrices.
+        for (size_t row = 0; row < 3U; ++row) {
+            for (size_t column = 0; column < 3U; ++column)
+                result[row][column] = static_cast<float>((row == column ? 1.0 : 0.0) +
+                                                         w * (r[row][column] - (row == column ? 1.0 : 0.0)));
+            result[row][3] = static_cast<float>(w * t[row]);
+        }
+        return result;
+    }
+    for (double& v : axis) v /= twiceSine;
+    const double x = axis[0], y = axis[1], z = axis[2];
+    const double turn = angle * w, c = std::cos(turn), sn = std::sin(turn), k = 1.0 - c;
+    const std::array<std::array<double, 3>, 3> rotation{{{c + x * x * k, x * y * k - z * sn, x * z * k + y * sn},
+                                                         {y * x * k + z * sn, c + y * y * k, y * z * k - x * sn},
+                                                         {z * x * k - y * sn, z * y * k + x * sn, c + z * z * k}}};
+    // The slide along the axis, and a point a of the axis line:
+    // (I - R + n n^T) a = t - (t.n) n (a has no part along n).
+    const double slide = t[0] * x + t[1] * y + t[2] * z;
+    std::array<double, 3> across{};
+    std::array<std::array<double, 3>, 3> m{};
+    for (size_t row = 0; row < 3U; ++row) {
+        across[row] = t[row] - slide * axis[row];
+        for (size_t column = 0; column < 3U; ++column)
+            m[row][column] = (row == column ? 1.0 : 0.0) - r[row][column] + axis[row] * axis[column];
+    }
+    const auto det3 = [](const std::array<std::array<double, 3>, 3>& a) {
+        return a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+               a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    };
+    const double det = det3(m);
+    std::array<double, 3> point{};
+    if (std::abs(det) > 1.0e-30) {
+        for (size_t column = 0; column < 3U; ++column) {
+            auto replaced = m;
+            for (size_t row = 0; row < 3U; ++row) replaced[row][column] = across[row];
+            point[column] = det3(replaced) / det;
+        }
+    }
+    // C x = R_w (x - a) + a + w * slide * n
+    for (size_t row = 0; row < 3U; ++row) {
+        double rotatedPoint = 0.0;
+        for (size_t column = 0; column < 3U; ++column) {
+            result[row][column] = static_cast<float>(rotation[row][column]);
+            rotatedPoint += rotation[row][column] * point[column];
+        }
+        result[row][3] = static_cast<float>(point[row] - rotatedPoint + w * slide * axis[row]);
+    }
+    return result;
+}
+
+Affine34 PartialCameraDeltaPivot(const Affine34& d, float w) {
     Affine34 result{};
     for (size_t row = 0; row < 3U; ++row) result[row][row] = 1.0F;
     if (w <= 0.0F) return result;
@@ -2401,9 +2534,18 @@ void ComputeModelMotions(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVi
         // Link's bones in the rows it does not use).
         const Oot3dPicaVertexUniformState* before =
             currentIndex > 0U ? &current.Draws[currentIndex - 1U].VertexShader.Uniforms : nullptr;
-        for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+        // A draw of no model and no skeleton (particles, a fire's glow) loads
+        // only its first matrix: its other rows were Link's bones, so a
+        // particle drawn after Deku Link spinning took his 55-65 degree turn
+        // about him and was flung round him in between frames.
+        static const bool allRows = std::getenv("TRIAEVUM_PARTICLE_ALL_ROWS") != nullptr;
+        const bool ownMatrixOnly = !allRows &&
+                                   composition.Provenance != Oot3dPicaCompositionProvenance::NativeModelInstance &&
+                                   current.Draws[currentIndex].Skinning == nullptr;
+        for (size_t first = 20U; first + 2U < (ownMatrixOnly ? 23U : 0x59U); first += 3U) {
             if (!RowsMoved(previousUniforms, currentUniforms, first)) continue;
-            const bool reloaded = before != nullptr && !RowsMoved(*before, currentUniforms, first);
+            const bool reloaded =
+                !ownMatrixOnly && before != nullptr && !RowsMoved(*before, currentUniforms, first);
             auto a = AffineAt(previousUniforms, first);
             if (rigid) a = MultiplyAffine(*inverseCamera, a);
             const auto b = AffineAt(currentUniforms, first);
@@ -2722,7 +2864,8 @@ bool SkinningMatchesUniforms(const Oot3dPicaDrawSkinning& skinning, const Oot3dP
 thread_local uint64_t gPoseTraceSequence = 0;
 
 bool BuildPoseTransition(const Oot3dPicaModelPose& previous, const Oot3dPicaModelPose& current,
-                         const Affine34* inverseCamera, PoseTransition& transition) {
+                         const Affine34* inverseCamera, PoseTransition& transition,
+                         const Affine34* cameraDelta = nullptr) {
     constexpr float kSnapAngle = 1.75F;   // radians (100 degrees): the game snaps, so do we
     constexpr float kJump = 300.0F;       // a root moving further in one game frame was placed anew
     const size_t count = current.Bones.size();
@@ -2836,15 +2979,33 @@ bool BuildPoseTransition(const Oot3dPicaModelPose& previous, const Oot3dPicaMode
         // A root that turned past what any animation does in one game frame
         // (Link reversing) or jumped: the whole model snaps, as in the game.
         float angle = 0.0F;
-        if (bone.Decomposed) {
-            const float cosine = std::abs(bone.Rotation0[0] * bone.Rotation1[0] + bone.Rotation0[1] * bone.Rotation1[1] +
-                                          bone.Rotation0[2] * bone.Rotation1[2] + bone.Rotation0[3] * bone.Rotation1[3]);
-            angle = 2.0F * std::acos(std::min(cosine, 1.0F));
-            if (angle > kSnapAngle) transition.Snap = true;
-        }
         float squared = 0.0F;
-        for (size_t r = 0; r < 3U; ++r)
-            squared += (local1[r][3] - local0[r][3]) * (local1[r][3] - local0[r][3]);
+        // Camera space roots also move with the camera: a far model's root
+        // "moved" 400-700 units when the camera turned 3-5 degrees and the
+        // whole model (a mountain, the field) snapped in between frames. The
+        // test compares the roots with the camera's change taken out (the
+        // rigid camera mode already did, for turns over 5 degrees).
+        static const bool cameraBlind = std::getenv("TRIAEVUM_NO_POSE_SNAP_CAMERA") != nullptr;
+        const auto still0 = DecomposeAffine(previous.Bones[i]);
+        const auto still1 = !cameraBlind && inverseCamera == nullptr && cameraDelta != nullptr
+                                ? DecomposeAffine(MultiplyAffine(*cameraDelta, current.Bones[i]))
+                                : std::optional<AffineParts>{};
+        if (still0 && still1) {
+            const auto& q0 = still0->Rotation;
+            const auto& q1 = still1->Rotation;
+            angle = 2.0F * std::acos(std::min(std::abs(q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3]), 1.0F));
+            for (size_t r = 0; r < 3U; ++r)
+                squared += (still1->Translation[r] - still0->Translation[r]) * (still1->Translation[r] - still0->Translation[r]);
+        } else {
+            if (bone.Decomposed) {
+                const float cosine = std::abs(bone.Rotation0[0] * bone.Rotation1[0] + bone.Rotation0[1] * bone.Rotation1[1] +
+                                              bone.Rotation0[2] * bone.Rotation1[2] + bone.Rotation0[3] * bone.Rotation1[3]);
+                angle = 2.0F * std::acos(std::min(cosine, 1.0F));
+            }
+            for (size_t r = 0; r < 3U; ++r)
+                squared += (local1[r][3] - local0[r][3]) * (local1[r][3] - local0[r][3]);
+        }
+        if (angle > kSnapAngle) transition.Snap = true;
         if (!(squared <= kJump * kJump)) transition.Snap = true;
         if (gPoseTraceSequence != 0U && (angle > 1.0F || squared > 30.0F * 30.0F))
             std::fprintf(stderr, "TRIAEVUM_POSE_ROOT seq=%llu model=%08x bones=%zu angle=%.1f move=%.1f%s\n",
@@ -2874,6 +3035,7 @@ void ComputePoseTransitions(const Oot3dPicaVisualFrame& previous, const Oot3dPic
     static const bool disabled = std::getenv("TRIAEVUM_NO_POSE_INTERPOLATION") != nullptr;
     static const bool trace = std::getenv("TRIAEVUM_POSE_TRACE") != nullptr;
     matching.Poses.clear();
+    matching.StillPoses.clear();
     matching.PoseByCurrent.assign(current.Draws.size(), std::numeric_limits<uint32_t>::max());
     if (disabled || matching.CameraCut) return;
     const auto previousPoses = CollectFramePoses(previous);
@@ -2884,11 +3046,98 @@ void ComputePoseTransitions(const Oot3dPicaVisualFrame& previous, const Oot3dPic
         inverseCamera = InvertAffine(matching.CameraDelta);
     gPoseTraceSequence = trace && current.Sequence == previous.Sequence + 1U ? current.Sequence : 0U;
     std::unordered_map<const Oot3dPicaModelPose*, uint32_t> indexByPose;
+    // Pooled models: MM3D's field bushes are a few model instances the game
+    // hands to whichever bushes are near the camera, so one instance is
+    // another bush when the view swings (a 150-unit jump against its
+    // neighbours' 40-70): paired by instance they slid between bushes or
+    // snapped in between frames, flickering on every fast turn. A previous
+    // pose more than 10 units from where the camera puts it (root, camera
+    // change removed) gives way to the nearest unused previous pose of the
+    // same skeleton within 25 units; with none, the current pose is shown.
+    static const bool noRepair = std::getenv("TRIAEVUM_NO_POSE_REPAIR") != nullptr;
+    const bool repair = !noRepair && matching.CameraDeltaValid && CameraInterpolationEnabled();
+    const auto rootPlace = [](const Oot3dPicaModelPose& pose) -> std::optional<std::array<float, 3>> {
+        for (size_t i = 0; i < pose.Bones.size() && i < pose.Parents.size(); ++i)
+            if (pose.Parents[i] < 0) return std::array<float, 3>{pose.Bones[i][0][3], pose.Bones[i][1][3], pose.Bones[i][2][3]};
+        return std::nullopt;
+    };
+    const auto distance = [&](const Oot3dPicaModelPose& before, const Oot3dPicaModelPose& now) {
+        const auto a = rootPlace(before), b = rootPlace(now);
+        if (!a || !b) return std::numeric_limits<float>::infinity();
+        const auto& d = matching.CameraDelta;
+        float squared = 0.0F;
+        for (size_t r = 0; r < 3U; ++r) {
+            const float moved = d[r][0] * (*b)[0] + d[r][1] * (*b)[1] + d[r][2] * (*b)[2] + d[r][3];
+            squared += (moved - (*a)[r]) * (moved - (*a)[r]);
+        }
+        return std::sqrt(squared);
+    };
+    const auto sameSkeleton = [](const Oot3dPicaModelPose& a, const Oot3dPicaModelPose& b) {
+        return a.Skeleton == b.Skeleton && a.Bones.size() == b.Bones.size() && a.Parents == b.Parents;
+    };
+    std::unordered_map<const Oot3dPicaModelPose*, const Oot3dPicaModelPose*> chosen;
+    if (repair) {
+        std::unordered_set<const Oot3dPicaModelPose*> used;
+        std::vector<const Oot3dPicaModelPose*> unsettled;
+        std::unordered_map<const Oot3dPicaModelPose*, const Oot3dPicaModelPose*> own;
+        for (const auto& [key, currentPose] : currentPoses) {
+            const auto found = previousPoses.find(key);
+            const bool same = found != previousPoses.end() && sameSkeleton(*found->second, *currentPose);
+            if (same) own[currentPose] = found->second;
+            if (same && distance(*found->second, *currentPose) <= 10.0F) {
+                chosen[currentPose] = found->second;
+                used.insert(found->second);
+            } else {
+                unsettled.push_back(currentPose);
+            }
+        }
+        for (const auto* currentPose : unsettled) {
+            const Oot3dPicaModelPose* best = nullptr;
+            float bestDistance = 25.0F;
+            size_t sharing = 0;
+            for (const auto& [key, previousPose] : previousPoses) {
+                if (!sameSkeleton(*previousPose, *currentPose)) continue;
+                ++sharing;
+                if (used.contains(previousPose)) continue;
+                const float d = distance(*previousPose, *currentPose);
+                if (d < bestDistance) { bestDistance = d; best = previousPose; }
+            }
+            // A model alone with its skeleton (Link rolling, Epona: more
+            // than 10 units a frame) keeps its own previous pose however far
+            // (the jump test still snaps); pooled ones (shared skeleton, an
+            // instance handed to another bush 30-150 units away) do not.
+            const auto mine = own.find(currentPose);
+            if (best == nullptr && sharing < 2U && mine != own.end() && !used.contains(mine->second))
+                best = mine->second;
+            if (best != nullptr) used.insert(best);
+            if (best == nullptr) {
+                // Nothing of it near before (a bush handed a pooled
+                // instance): still in the world, so before it was where the
+                // camera's change puts it.
+                auto& still = matching.StillPoses.emplace_back(*currentPose);
+                for (auto& bone : still.Bones) bone = MultiplyAffine(matching.CameraDelta, bone);
+                best = &still;
+            }
+            chosen[currentPose] = best;
+            if (gPoseTraceSequence != 0U)
+                std::fprintf(stderr, "TRIAEVUM_POSE_REPAIR seq=%llu model=%08x from=%08x distance=%.1f\n",
+                             static_cast<unsigned long long>(gPoseTraceSequence), currentPose->Model,
+                             best != nullptr ? best->Model : 0U, best != nullptr ? bestDistance : -1.0F);
+        }
+    }
     for (const auto& [key, currentPose] : currentPoses) {
-        const auto found = previousPoses.find(key);
-        if (found == previousPoses.end() || found->second->Skeleton != currentPose->Skeleton) continue;
+        const Oot3dPicaModelPose* before = nullptr;
+        if (repair) {
+            before = chosen[currentPose];
+        } else {
+            const auto found = previousPoses.find(key);
+            if (found == previousPoses.end() || found->second->Skeleton != currentPose->Skeleton) continue;
+            before = found->second;
+        }
         PoseTransition transition;
-        if (!BuildPoseTransition(*found->second, *currentPose, inverseCamera ? &*inverseCamera : nullptr, transition))
+        if (!BuildPoseTransition(*before, *currentPose, inverseCamera ? &*inverseCamera : nullptr, transition,
+                                 matching.CameraDeltaValid && CameraInterpolationEnabled() ? &matching.CameraDelta
+                                                                                           : nullptr))
             continue;
         indexByPose.emplace(currentPose, static_cast<uint32_t>(matching.Poses.size()));
         matching.Poses.push_back(std::move(transition));
@@ -3517,6 +3766,59 @@ void AttachUnpairedModelDraws(const Oot3dPicaVisualFrame& current, const VisualD
     }
 }
 
+// A world draw with no previous draw (MM3D's field grass: one batch whose
+// vertex count changes as tufts come into range, unpaired on 40% of the
+// frames) was moved by the estimated camera change, an average that put it
+// 20-30 milliradians off the ground in between frames: the grass flickered
+// as it loaded. Its matrix is the same view matrix the paired scenery around
+// it uses (the field's parts): rows equal to a paired draw's take that
+// draw's in-between rows, so it moves exactly with them. Model instances
+// keep AttachUnpairedModelDraws (same model only).
+template <typename OutputOf>
+void AttachUnpairedWorldDraws(const Oot3dPicaVisualFrame& current, const VisualDrawMatching& matching,
+                              OutputOf outputOf,
+                              const std::function<Oot3dPicaVertexUniformState&(size_t)>& unpairedUniforms) {
+    static const bool disabled = std::getenv("TRIAEVUM_NO_UNPAIRED_WORLD_ATTACH") != nullptr;
+    if (disabled) return;
+    const auto rowHash = [](const Oot3dPicaVertexUniformState& u, size_t first) {
+        uint64_t hash = kFnvOffset;
+        for (size_t row = 0; row < 3U; ++row) HashValue(hash, u.Floats[first + row]);
+        return hash;
+    };
+    std::vector<size_t> unpaired;
+    for (size_t index = 0; index < current.Draws.size(); ++index)
+        if (!matching.PreviousByCurrent[index].has_value() &&
+            current.Draws[index].Composition.Provenance != Oot3dPicaCompositionProvenance::NativeModelInstance &&
+            UsesModelViewLayout(current.Draws[index].VertexShader.Uniforms))
+            unpaired.push_back(index);
+    if (unpaired.empty()) return;
+    std::unordered_map<uint64_t, std::pair<size_t, size_t>> sources;  // row hash -> (draw, first row)
+    for (size_t index = 0; index < current.Draws.size(); ++index) {
+        if (!matching.PreviousByCurrent[index].has_value() || outputOf(index) == nullptr ||
+            !UsesModelViewLayout(current.Draws[index].VertexShader.Uniforms))
+            continue;
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U)
+            sources.emplace(rowHash(current.Draws[index].VertexShader.Uniforms, first), std::make_pair(index, first));
+    }
+    if (sources.empty()) return;
+    for (const size_t index : unpaired) {
+        const auto& draw = current.Draws[index];
+        for (size_t first = 20U; first + 2U < 0x59U; first += 3U) {
+            const auto found = sources.find(rowHash(draw.VertexShader.Uniforms, first));
+            if (found == sources.end()) continue;
+            const auto& [sourceIndex, sourceFirst] = found->second;
+            const auto& source = current.Draws[sourceIndex].VertexShader.Uniforms;
+            bool same = true;
+            for (size_t row = 0; row < 3U; ++row)
+                same = same && source.Floats[sourceFirst + row] == draw.VertexShader.Uniforms.Floats[first + row];
+            if (!same) continue;
+            const auto* sampled = outputOf(sourceIndex);
+            auto& target = unpairedUniforms(index);
+            for (size_t row = 0; row < 3U; ++row) target.Floats[first + row] = sampled->Floats[sourceFirst + row];
+        }
+    }
+}
+
 bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const Oot3dPicaVisualFrame& current,
                                    float alpha, const VisualDrawMatching& matching, Oot3dPicaVisualFrameSample& output,
                                    const std::vector<VisualDrawDeltaFlags>* drawDeltas = nullptr) {
@@ -3593,6 +3895,10 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
         current, matching,
         [&](size_t index) -> const Oot3dPicaVertexUniformState* { return &output.Draws[index].VertexShader.Uniforms; },
         [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
+    AttachUnpairedWorldDraws(
+        current, matching,
+        [&](size_t index) -> const Oot3dPicaVertexUniformState* { return &output.Draws[index].VertexShader.Uniforms; },
+        [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
     const auto sampledPoses = ApplySampledPoses(
         previous, current, matching, alpha,
         [&](size_t index) -> Oot3dPicaVertexUniformState& { return output.Draws[index].VertexShader.Uniforms; });
@@ -3643,6 +3949,24 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
     output.InterpolatedDraws = 0;
     output.InterpolatedPerInstanceVertexDraws = 0;
     output.InterpolatedPerVertexDraws = 0;
+    output.ViewAdjustmentValid = false;
+    if (CameraInterpolationEnabled() && matching.CameraDeltaValid) {
+        // As ApplyCameraDelta moves the world draws: rigid partial rotation, or
+        // the linear blend I + w (D - I).
+        const float weight = 1.0F - std::clamp(alpha, 0.0F, 1.0F);
+        Affine34 adjustment = PartialCameraDelta(matching.CameraDelta, weight);
+        if (!matching.RigidCamera) {
+            for (size_t row = 0; row < 3U; ++row)
+                for (size_t column = 0; column < 4U; ++column) {
+                    const float identity = row == column ? 1.0F : 0.0F;
+                    adjustment[row][column] = identity + weight * (matching.CameraDelta[row][column] - identity);
+                }
+        }
+        for (size_t row = 0; row < 3U; ++row)
+            for (size_t column = 0; column < 4U; ++column)
+                output.ViewAdjustment[row * 4U + column] = adjustment[row][column];
+        output.ViewAdjustmentValid = true;
+    }
     output.Draws.resize(current.Draws.size());
 
     for (size_t currentIndex = 0; currentIndex < current.Draws.size(); ++currentIndex) {
@@ -3756,6 +4080,16 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
             if (!sampled.VertexUniforms.has_value()) sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
             return *sampled.VertexUniforms;
         });
+    AttachUnpairedWorldDraws(
+        current, matching,
+        [&](size_t index) -> const Oot3dPicaVertexUniformState* {
+            return output.Draws[index].VertexUniforms.has_value() ? &*output.Draws[index].VertexUniforms : nullptr;
+        },
+        [&](size_t index) -> Oot3dPicaVertexUniformState& {
+            auto& sampled = output.Draws[index];
+            if (!sampled.VertexUniforms.has_value()) sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
+            return *sampled.VertexUniforms;
+        });
     const auto sampledPoses =
         ApplySampledPoses(previous, current, matching, alpha, [&](size_t index) -> Oot3dPicaVertexUniformState& {
             auto& sampled = output.Draws[index];
@@ -3763,6 +4097,77 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
                 sampled.VertexUniforms.emplace(current.Draws[index].VertexShader.Uniforms);
             return *sampled.VertexUniforms;
         });
+    // TRIAEVUM_MID_AUDIT=<file>: in-between samples (alpha 0.3..0.7), per
+    // world draw: path, then the origin (f20..22 column 3) previous, current,
+    // sampled (session_tools/midaudit.py).
+    static FILE* midAudit = [] {
+        const char* path = std::getenv("TRIAEVUM_MID_AUDIT");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (midAudit != nullptr && alpha > 0.3F && alpha < 0.7F) {
+        const auto& d = matching.CameraDelta;
+        std::fprintf(midAudit, "M %llu %.3f %d %d %d", static_cast<unsigned long long>(current.Sequence), alpha,
+                     matching.CameraDeltaValid ? 1 : 0, matching.RigidCamera ? 1 : 0, matching.CameraCut ? 1 : 0);
+        for (size_t row = 0; row < 3U; ++row)
+            for (size_t column = 0; column < 4U; ++column) std::fprintf(midAudit, " %.6g", d[row][column]);
+        // steady clock ms: lines up with TRIAEVUM_WARP's (area of a sample)
+        std::fprintf(midAudit, " %lld\n",
+                     static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                std::chrono::steady_clock::now().time_since_epoch())
+                                                .count()));
+        for (size_t index = 0; index < current.Draws.size(); ++index) {
+            const auto& draw = current.Draws[index];
+            if (!UsesModelViewLayout(draw.VertexShader.Uniforms)) continue;
+            const auto& match = matching.PreviousByCurrent[index];
+            const auto& c = draw.VertexShader.Uniforms.Floats;
+            const auto& s = output.Draws[index].VertexUniforms.has_value() ? output.Draws[index].VertexUniforms->Floats : c;
+            const auto* p = match.has_value() ? &previous.Draws[match->PreviousIndex].VertexShader.Uniforms.Floats : &c;
+            const bool posed = index < matching.PoseByCurrent.size() &&
+                               matching.PoseByCurrent[index] != std::numeric_limits<uint32_t>::max();
+            std::fprintf(midAudit, "P %zu %d %d %d %d %08x %u %08x %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", index,
+                         match.has_value() ? static_cast<int>(match->Kind) : -1, matching.MotionFor(index) != nullptr ? 1 : 0,
+                         posed ? 1 : 0, static_cast<int>(draw.Composition.Layer),
+                         draw.Textures.empty() ? 0U : draw.Textures.front().State.PhysicalAddress, draw.VertexCount,
+                         draw.Composition.NativeValue, (*p)[20][3], (*p)[21][3], (*p)[22][3], c[20][3], c[21][3], c[22][3],
+                         s[20][3], s[21][3], s[22][3]);
+        }
+    }
+    // TRIAEVUM_MID_MATRICES=<file>: every sample, per world draw the first
+    // matrix (f20..22) previous, current and shown (ground_jitter tools).
+    static FILE* midMatrices = [] {
+        const char* path = std::getenv("TRIAEVUM_MID_MATRICES");
+        return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (midMatrices != nullptr) {
+        const auto& d = matching.CameraDelta;
+        std::fprintf(midMatrices, "S %llu %.4f %d %d", static_cast<unsigned long long>(current.Sequence), alpha,
+                     matching.CameraDeltaValid ? 1 : 0, matching.RigidCamera ? 1 : 0);
+        for (size_t row = 0; row < 3U; ++row)
+            for (size_t column = 0; column < 4U; ++column) std::fprintf(midMatrices, " %.7g", d[row][column]);
+        std::fprintf(midMatrices, " %lld\n",
+                     static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                std::chrono::steady_clock::now().time_since_epoch())
+                                                .count()));
+        for (size_t index = 0; index < current.Draws.size(); ++index) {
+            const auto& draw = current.Draws[index];
+            if (!UsesModelViewLayout(draw.VertexShader.Uniforms)) continue;
+            const auto& match = matching.PreviousByCurrent[index];
+            const auto& c = draw.VertexShader.Uniforms.Floats;
+            const auto& s = output.Draws[index].VertexUniforms.has_value() ? output.Draws[index].VertexUniforms->Floats : c;
+            const auto* p = match.has_value() ? &previous.Draws[match->PreviousIndex].VertexShader.Uniforms.Floats : &c;
+            const bool posed = index < matching.PoseByCurrent.size() &&
+                               matching.PoseByCurrent[index] != std::numeric_limits<uint32_t>::max();
+            std::fprintf(midMatrices, "Q %zu %d %d %d %d %08x %u %u %08x", index,
+                         match.has_value() ? static_cast<int>(match->Kind) : -1, posed ? 1 : 0,
+                         draw.Skinning != nullptr ? 1 : 0, matching.MotionFor(index) != nullptr ? 1 : 0,
+                         draw.Composition.NativeValue, draw.Composition.Ordinal, draw.VertexCount,
+                         draw.Textures.empty() ? 0U : draw.Textures.front().State.PhysicalAddress);
+            for (const auto* m : {p, &c, &s})
+                for (size_t row = 20U; row < 23U; ++row)
+                    for (size_t column = 0; column < 4U; ++column) std::fprintf(midMatrices, " %.7g", (*m)[row][column]);
+            std::fprintf(midMatrices, "\n");
+        }
+    }
     // Draws added after a current draw, and current draws left out.
     std::vector<std::vector<Oot3dPicaVisualDrawView>> inserted;
     std::vector<bool> hidden;
@@ -4305,6 +4710,7 @@ bool ViewOot3dPicaVisualFrame(
     output.InterpolatedDraws = 0;
     output.InterpolatedPerInstanceVertexDraws = 0;
     output.InterpolatedPerVertexDraws = 0;
+    output.ViewAdjustmentValid = false;  // drawn exactly as the game frame
     output.Draws.resize(frame.Draws.size());
     for (size_t index = 0; index < frame.Draws.size(); ++index) {
         auto& view = output.Draws[index];

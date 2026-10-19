@@ -116,6 +116,8 @@ public:
   Oot3dPicaPresentationSchedulerState CaptureState() const;
   bool RestoreState(Oot3dPicaPresentationSchedulerState state);
   size_t PendingDrawCount() const;
+  // Sequence the visual frame now being accumulated will receive.
+  uint64_t NextVisualFrameSequence() const noexcept { return mAccumulator.NextSequence(); }
   const Oot3dPicaPresentationSchedulerStats &Stats() const noexcept;
   const Oot3dPicaPresentationSchedulerTimings &Timings() const noexcept;
 

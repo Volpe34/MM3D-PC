@@ -40,6 +40,14 @@ pull requests are welcome.
   ocarina songs, bank, giving items.
 - **Input:** controller, keyboard and mouse. Button prompts come in Xbox,
   DualShock, Nintendo, SNES and original 3DS styles.
+- **Game language:** English, French or Spanish (the three languages of the
+  USA game), in **F1 → Game**. It applies the next time the game starts.
+- **Warp:** go to any area of the game from **F1 → Warp** (search by name,
+  pick where you arrive and, optionally, a form). It works during normal
+  play only, not on the Clock Tower rooftop on the final night.
+- **Item button letters:** move and resize each item button's letter in
+  **F1 → Buttons**, with sliders or by dragging it on screen (mouse wheel to
+  resize).
 
 ## Requirements
 
@@ -98,7 +106,8 @@ new.
   [MM3D 4K pack](https://www.henrikomagnifico.com/zelda-majoras-mask-3d-4k)):
   copy the contents of the pack's title folder into `data/textures`. Sub-folders
   are fine, and packs with or without `pack.json` both work. The button style
-  is applied on top of the pack. A new area waits a moment for its textures
+  is applied on top of the pack: only its button glyphs are painted over the
+  pack's HD hearts, rupees, digits and item icons, which stay HD. A new area waits a moment for its textures
   (no low-resolution pop-in). With enough RAM, turn on **F1 → Textures →
   Preload custom textures** and raise **Texture memory** (the 4K pack needs
   about 6.5 GB): the whole pack is decoded in the background and areas
@@ -199,6 +208,9 @@ It fails if any byte run of the game is found in the package.
   **HardDanX**, the Xbox / DualShock / Nintendo button prompt textures
   (CC BY-NC-ND 4.0). Setup downloads them from GameBanana; they are not
   redistributed here.
+- **[aoiacee](https://github.com/aoiacee)**, for the fix that keeps the F1
+  grass on the ground while the camera moves (issue #7), and for helping me
+  understand the grass problem.
 - **Project Restoration** and the MM3D decompilation/randomizer projects, for
   game structure research.
 - **Nintendo** and **Grezzo**, who made the game. This is a fan project, not

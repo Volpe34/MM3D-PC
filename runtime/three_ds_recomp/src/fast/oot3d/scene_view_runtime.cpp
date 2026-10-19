@@ -1,6 +1,7 @@
 #include "fast/oot3d/scene_view_runtime.h"
 
 #include <cmath>
+#include <cstdlib>
 
 namespace Fast::Oot3d {
 namespace {
@@ -65,7 +66,8 @@ float Dot(const std::array<float, 3>& a, const std::array<float, 3>& b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-void RebuildWorldToClip(PerspectiveViewState& state) {
+// adjustment: row-major 3x4 applied after the camera view (view' = A * view).
+void RebuildWorldToClip(PerspectiveViewState& state, const std::array<float, 12>* adjustment = nullptr) {
     if (!state.CameraAvailable)
         return;
     const auto forward =
@@ -92,6 +94,21 @@ void RebuildWorldToClip(PerspectiveViewState& state) {
                                 -Dot(up, state.Eye),
                                 Dot(forward, state.Eye),
                                 1.0F };
+    if (adjustment != nullptr) {
+        const auto& a = *adjustment;
+        std::array<float, 16> adjusted{};
+        for (size_t column = 0; column < 4; ++column) {
+            for (size_t row = 0; row < 3; ++row) {
+                float value = a[row * 4 + 3] * view[column * 4 + 3];
+                for (size_t k = 0; k < 3; ++k)
+                    value += a[row * 4 + k] * view[column * 4 + k];
+                adjusted[column * 4 + row] = value;
+            }
+            adjusted[column * 4 + 3] = view[column * 4 + 3];
+        }
+        view = adjusted;
+    }
+    state.WorldToView = view;
     std::array<float, 16> projection{};
     projection[0] = 2.0F * state.NearPlane / (state.Right - state.Left);
     projection[5] = 2.0F * state.NearPlane / (state.Top - state.Bottom);
@@ -119,7 +136,8 @@ SceneViewRuntime& SceneViewRuntime::Instance() {
 }
 
 void SceneViewRuntime::PublishPerspective(uint32_t guestFunction, uint32_t guestReturnAddress, float left, float right,
-                                          float bottom, float top, float nearPlane, float farPlane) {
+                                          float bottom, float top, float nearPlane, float farPlane,
+                                          uint64_t sourceFrame) {
     if (!ValidPerspective(left, right, bottom, top, nearPlane, farPlane)) {
         return;
     }
@@ -136,11 +154,13 @@ void SceneViewRuntime::PublishPerspective(uint32_t guestFunction, uint32_t guest
     }
     view.Serial = mNextSerial++;
     mLatest = view;
+    Remember(view, sourceFrame);
 }
 
 void SceneViewRuntime::PublishPerspectiveCamera(uint32_t guestFunction, uint32_t guestReturnAddress, float left,
                                                 float right, float bottom, float top, float nearPlane, float farPlane,
-                                                const std::array<float, 3>& eye, const std::array<float, 3>& at) {
+                                                const std::array<float, 3>& eye, const std::array<float, 3>& at,
+                                                uint64_t sourceFrame) {
     if (!ValidPerspective(left, right, bottom, top, nearPlane, farPlane) || !ValidCamera(eye, at)) {
         return;
     }
@@ -154,6 +174,19 @@ void SceneViewRuntime::PublishPerspectiveCamera(uint32_t guestFunction, uint32_t
     std::scoped_lock lock(mMutex);
     view.Serial = mNextSerial++;
     mLatest = view;
+    Remember(view, sourceFrame);
+}
+
+void SceneViewRuntime::Remember(const PerspectiveViewState& view, uint64_t sourceFrame) {
+    // Caller holds mMutex. The last view published for a source frame wins.
+    if (sourceFrame == 0U)
+        return;
+    if (!mHistory.empty() && mHistory.back().first == sourceFrame)
+        mHistory.back().second = view;
+    else
+        mHistory.emplace_back(sourceFrame, view);
+    while (mHistory.size() > 8U)
+        mHistory.pop_front();
 }
 
 void SceneViewRuntime::PublishCamera(const std::array<float, 3>& eye, const std::array<float, 3>& at) {
@@ -174,12 +207,35 @@ void SceneViewRuntime::PublishCamera(const std::array<float, 3>& eye, const std:
 
 std::optional<PerspectiveViewState> SceneViewRuntime::LatestPerspective() const {
     std::scoped_lock lock(mMutex);
-    return mLatest;
+    std::optional<PerspectiveViewState> view = mLatest;
+    // A presentation behind the newest source frame draws that frame's scene:
+    // anchor with its camera, not the newest one.
+    if (mPresentedSourceFrame != 0U) {
+        for (auto it = mHistory.rbegin(); it != mHistory.rend(); ++it) {
+            if (it->first == mPresentedSourceFrame) {
+                view = it->second;
+                break;
+            }
+        }
+    }
+    if (view.has_value() && mAdjustment.has_value() && view->CameraAvailable)
+        RebuildWorldToClip(*view, &*mAdjustment);
+    return view;
+}
+
+void SceneViewRuntime::SetPresentation(uint64_t sourceFrame, const std::optional<std::array<float, 12>>& adjustment) {
+    static const bool disabled = std::getenv("TRIAEVUM_NO_VIEW_ADJUSTMENT") != nullptr;
+    std::scoped_lock lock(mMutex);
+    mPresentedSourceFrame = disabled ? 0U : sourceFrame;
+    mAdjustment = disabled ? std::nullopt : adjustment;
 }
 
 void SceneViewRuntime::Reset() {
     std::scoped_lock lock(mMutex);
     mLatest.reset();
+    mHistory.clear();
+    mPresentedSourceFrame = 0U;
+    mAdjustment.reset();
 }
 
 } // namespace Fast::Oot3d
