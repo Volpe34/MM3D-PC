@@ -116,6 +116,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <span>
@@ -124,6 +125,8 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <sstream>
+#include <tuple>
 #include <vector>
 
 #if defined(_WIN32)
@@ -395,6 +398,8 @@ struct NativeWidescreenProjectionState {
   // camera reads.
   uint32_t PlayCalcPc = 0;
   float CameraStickSpeed = 1.0F;
+  // MM3D: F1 > Cheats, applied there too (once per game frame).
+  Oot3dNativeGame::Mm3dCheats *Cheats = nullptr;
   // MM3D: the layout draw manager's per-pass function (manager in r0, after
   // mm3d-dekui): the names of the layouts queued for the lower screen.
   uint32_t LayoutPassPc = 0;
@@ -1993,6 +1998,21 @@ void ApplyNativeWidescreenProjectionPolicy(
     uint32_t pc, oot3d::recomp::a32::GuestState &state,
     oot3d::recomp::a32::MemoryBus &memory, void *user) {
   auto &runtime = *static_cast<NativeWidescreenProjectionState *>(user);
+  if (pc == 0x001F55CCU) {
+    // TRIAEVUM_OBJECT_TRACE: Object find (objects r0, id r1) with no slot
+    // holding that object, once per id and caller.
+    static std::set<uint64_t> reported;
+    uint8_t count = 0;
+    bool found = false;
+    memory.Read8(state.r[0], &count);
+    for (uint32_t i = 0; i < count && i < 0x24U && !found; ++i) {
+      uint16_t id = 0;
+      memory.Read16(state.r[0] + i * 0xACU + 4U, &id);
+      found = std::abs(static_cast<int16_t>(id)) == static_cast<int>(state.r[1]);
+    }
+    if (!found && reported.insert((static_cast<uint64_t>(state.r[14]) << 32) | state.r[1]).second)
+      std::fprintf(stderr, "TRIAEVUM_OBJECT_MISS id=%u lr=%08X\n", state.r[1], state.r[14]);
+  }
   if (pc != 0U && pc == runtime.PlayCalcPc) {
     // GlobalContext = *(*0x72F5C0 + 0x16C), the play state (+0x13D == 4);
     // its pad state is at +0x28, the right stick's at +0x70.
@@ -2009,6 +2029,7 @@ void ApplyNativeWidescreenProjectionPolicy(
             memory.Write32(gctx + offset, std::bit_cast<uint32_t>(std::bit_cast<float>(bits) * runtime.CameraStickSpeed));
         }
       }
+      if (runtime.Cheats != nullptr) Oot3dNativeGame::ApplyMm3dCheats(*runtime.Cheats, memory, gctx);
       static FILE *cameraSpeedTrace = [] {
         const char *path = std::getenv("TRIAEVUM_CAMERA_YAW_TRACE");
         return path != nullptr ? std::fopen(path, "w") : nullptr;
@@ -3557,6 +3578,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   // MM3D's F1 > Warp and F1 > Buttons.
   std::shared_ptr<Oot3dNativeGame::Mm3dWarpRequest> mm3dWarpRequest;
   std::shared_ptr<Oot3dNativeGame::Mm3dButtonLabelEditor> mm3dButtonLabels;
+  std::shared_ptr<Oot3dNativeGame::Mm3dCheats> mm3dCheats;
   // A title other than OoT3D runs without the OoT3D ports, hooks and UI
   // semantics, which are all keyed by OoT3D code and data addresses.
   const bool foreignTitle = manifest->Title.Present;
@@ -3577,6 +3599,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               {"en", "English", 1}, {"fr", "Francais", 2}, {"es", "Espanol", 5}});
       hostConfig.SystemLanguage = languageSettings->SystemId();
       mm3dWarpRequest = std::make_shared<Oot3dNativeGame::Mm3dWarpRequest>();
+      mm3dCheats = std::make_shared<Oot3dNativeGame::Mm3dCheats>();
       mm3dButtonLabels = std::make_shared<Oot3dNativeGame::Mm3dButtonLabelEditor>(
           std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "button_labels.json");
     }
@@ -3608,6 +3631,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   const std::filesystem::path quickStatePath =
       launch.QuickStatePath.empty() ? saveDataDirectory / "quick.oot3dsav"
                                     : launch.QuickStatePath;
+  // F1 > Save states: slot 1 is quickStatePath, slots 2..10 sit next to it.
+  const auto saveStateSlots = std::make_shared<Oot3dNativeGame::SaveStateSlots>(quickStatePath);
   const Oot3dNativeGame::NativeA32SavestateCompatibility savestateCompatibility{
       manifest->CodeBinSha256,
       manifest->ProcessName,
@@ -3885,7 +3910,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         widescreenProjection.LayoutPassPc = 0x001267E8U;
         blockEntryHooks.push_back(widescreenProjection.LayoutPassPc);
         widescreenProjection.PlayCalcPc = 0x0014F550U;  // GameState+0x104 of the play state
+        widescreenProjection.Cheats = mm3dCheats.get();
         blockEntryHooks.push_back(widescreenProjection.PlayCalcPc);
+        // TRIAEVUM_OBJECT_TRACE: object lookups that find nothing (tests).
+        if (std::getenv("TRIAEVUM_OBJECT_TRACE") != nullptr) blockEntryHooks.push_back(0x001F55CCU);
       }
       // Each draw carries the model instance that submitted it, so frame
       // interpolation pairs a model with itself whatever the draw order.
@@ -4343,8 +4371,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       applicationSettingsTabs;
   if (languageSettings) applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
   if (mm3dWarpRequest) applicationSettingsTabs.push_back(Oot3dNativeGame::CreateMm3dWarpPanel(mm3dWarpRequest));
+  if (mm3dCheats) applicationSettingsTabs.push_back(Oot3dNativeGame::CreateMm3dCheatsPanel(mm3dCheats));
   if (mm3dButtonLabels)
     applicationSettingsTabs.push_back(Oot3dNativeGame::CreateMm3dButtonLabelPanel(mm3dButtonLabels));
+  applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSaveStatePanel(saveStateSlots));
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(
           controlConfigRuntime,
@@ -5051,6 +5081,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           memory.Read32(context + 0x16CU, &game) && game >= 0x100000U && (game & 3U) == 0U &&
                           memory.Read32(game + 0x13CU, &type) && ((type >> 8U) & 0xFFU) == 4U;
       mm3dWarpRequest->InPlay = inPlay;
+      if (mm3dCheats) {
+        mm3dCheats->InPlay = inPlay;
+        if (inPlay) Oot3dNativeGame::ProcessMm3dSpawn(*mm3dCheats, process, game);
+      }
       // TRIAEVUM_F1_WARP_TEST=<entrance>: the F1 warp asked for once in play (tests).
       static bool warpTestQueued = false;
       static const auto warpTestStart = std::chrono::steady_clock::now();
@@ -5431,7 +5465,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   uint64_t hudLayerLastDrawCount = 0;
   uint32_t hudLayerIdleFrames = 1000U;
   bool quickLoadKeyWasDown = false;
-  bool quickSavePending = false;
+  bool previousSlotKeyWasDown = false;
+  bool nextSlotKeyWasDown = false;
+  // The slot of a save that could not be taken yet (retried every frame).
+  int saveSlotPending = 0;
   bool automatedStateSaved = false;
   std::optional<uint32_t> automatedStateSavedAtRunFrame;
   std::optional<uint32_t> automatedStateSavedAtGuestFrame;
@@ -5922,11 +5959,43 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     const auto inputPhaseStart = std::chrono::steady_clock::now();
     const bool quickSaveKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F5);
     const bool quickLoadKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F8);
-    quickSavePending =
-        quickSavePending || (quickSaveKeyDown && !quickSaveKeyWasDown);
-    const bool quickLoadRequested = quickLoadKeyDown && !quickLoadKeyWasDown;
+    // F5 / F8 save / load the selected slot, F6 / F7 select the previous / next one.
+    const bool previousSlotKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F6);
+    const bool nextSlotKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F7);
+    if (quickSaveKeyDown && !quickSaveKeyWasDown) saveStateSlots->RequestSave(saveStateSlots->Selected());
+    if (quickLoadKeyDown && !quickLoadKeyWasDown) saveStateSlots->RequestLoad(saveStateSlots->Selected());
+    if ((previousSlotKeyDown && !previousSlotKeyWasDown) || (nextSlotKeyDown && !nextSlotKeyWasDown)) {
+      constexpr int slots = Oot3dNativeGame::SaveStateSlots::kSlots;
+      const int slot = (saveStateSlots->Selected() - 1 + (nextSlotKeyDown ? 1 : slots - 1)) % slots + 1;
+      saveStateSlots->Select(slot);
+      std::error_code ignored;
+      saveStateSlots->Report("Slot " + std::to_string(slot) +
+                             (std::filesystem::exists(saveStateSlots->Path(slot), ignored) ? "" : " (empty)"));
+    }
+    // TRIAEVUM_SAVESTATE_TEST=s3@600,l3@900: save / load a slot at those host frames.
+    static const std::vector<std::tuple<uint64_t, char, int>> savestateTest = [] {
+      std::vector<std::tuple<uint64_t, char, int>> steps;
+      if (const char *list = std::getenv("TRIAEVUM_SAVESTATE_TEST")) {
+        std::stringstream stream(list);
+        std::string item;
+        while (std::getline(stream, item, ',')) {
+          const auto at = item.find('@');
+          if (item.size() < 4 || at == std::string::npos) continue;
+          steps.emplace_back(std::strtoull(item.c_str() + at + 1, nullptr, 10), item[0],
+                             std::atoi(item.substr(1, at - 1).c_str()));
+        }
+      }
+      return steps;
+    }();
+    for (const auto &[frame, kind, slot] : savestateTest) {
+      if (frame != presentationFrameCount) continue;
+      if (kind == 's') saveStateSlots->RequestSave(slot);
+      if (kind == 'l') saveStateSlots->RequestLoad(slot);
+    }
     quickSaveKeyWasDown = quickSaveKeyDown;
     quickLoadKeyWasDown = quickLoadKeyDown;
+    previousSlotKeyWasDown = previousSlotKeyDown;
+    nextSlotKeyWasDown = nextSlotKeyDown;
     if (foreignTitle) {
       const bool screenLayoutKeyDown =
           window.IsKeyDown(Ship::KbScancode::LUS_KB_F3);
@@ -8693,6 +8762,21 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
       }
     }
+    if (const std::string message = saveStateSlots->Message(); !message.empty()) {
+      // A save state's result (or the newly selected slot) for 3 seconds, top center.
+      const ImGuiViewport *viewport = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5F,
+                                     viewport->Pos.y + viewport->Size.y * 0.04F),
+                              ImGuiCond_Always, ImVec2(0.5F, 0.0F));
+      ImGui::SetNextWindowBgAlpha(0.65F);
+      ImGui::Begin("##savestate_message", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+      ImGui::SetWindowFontScale(std::max(1.0F, viewport->Size.y / 720.0F));
+      ImGui::TextUnformatted(message.c_str());
+      ImGui::End();
+    }
     phaseStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
     gui->EndDraw();
@@ -8806,13 +8890,22 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       ++benchmarkMeasuredFrames;
       if (cpuProbeRequested) benchmarkCpuPhases = CpuProbe::Thread.Snapshot();
     }
-    if (quickLoadRequested) {
-      if (loadState(quickStatePath)) {
-        quickSavePending = false;
+    if (const int saveSlot = saveStateSlots->TakeSave(); saveSlot != 0) saveSlotPending = saveSlot;
+    if (const int loadSlot = saveStateSlots->TakeLoad(); loadSlot != 0) {
+      const std::string name = "Slot " + std::to_string(loadSlot);
+      std::error_code ignored;
+      if (!std::filesystem::exists(saveStateSlots->Path(loadSlot), ignored)) {
+        saveStateSlots->Report(name + " is empty");
+      } else if (loadState(saveStateSlots->Path(loadSlot))) {
+        saveSlotPending = 0;
+        saveStateSlots->Report(name + " loaded");
+      } else {
+        saveStateSlots->Report(name + " could not be loaded (saved by another version of the port?)");
       }
     } else {
-      if (quickSavePending && saveState(quickStatePath)) {
-        quickSavePending = false;
+      if (saveSlotPending != 0 && saveState(saveStateSlots->Path(saveSlotPending))) {
+        saveStateSlots->Report("Saved to slot " + std::to_string(saveSlotPending));
+        saveSlotPending = 0;
       }
       if (Oot3dNativeGame::ShouldCaptureNativeA32AutomatedState(
               launch.SaveStateFrameAvailable, automatedStateSaved,

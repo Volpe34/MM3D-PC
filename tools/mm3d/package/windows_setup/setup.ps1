@@ -61,7 +61,7 @@ try {
 
   $python = "$root\tools\python\python.exe"
   if (-not (Test-Path $python)) {
-    Write-Host "== Downloading Python 3.12 (embeddable, python.org)"
+    Write-Host "== [$(Get-Date -Format HH:mm:ss)] Downloading Python 3.12 (embeddable, python.org)"
     $zip = "$root\tools\python.zip"
     Get-Verified 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip' $zip `
       '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
@@ -73,7 +73,7 @@ try {
   }
   & $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('capstone') else 1)"
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "== Downloading capstone 5.0.9 (disassembler, PyPI)"
+    Write-Host "== [$(Get-Date -Format HH:mm:ss)] Downloading capstone 5.0.9 (disassembler, PyPI)"
     $wheel = "$root\tools\capstone.zip"
     Get-Verified 'https://files.pythonhosted.org/packages/50/e6/6f06fdb6a9ed32b2f7cd9c036b92d5324112c3ef7080f2c71efc367d40dd/capstone-5.0.9-py3-none-win_amd64.whl' $wheel `
       '732cedbbb56d42e723f14d7af6387f1454194a820b4b96b56d1e53f865ef85d0'
@@ -84,7 +84,7 @@ try {
   }
   $clang = "$root\tools\llvm-mingw\bin\clang++.exe"
   if (-not (Test-Path $clang)) {
-    Write-Host "== Downloading the llvm-mingw compiler (about 190 MB, github.com/mstorsjo/llvm-mingw)"
+    Write-Host "== [$(Get-Date -Format HH:mm:ss)] Downloading the llvm-mingw compiler (about 190 MB, github.com/mstorsjo/llvm-mingw)"
     $zip = "$root\tools\llvm-mingw.zip"
     Get-Verified 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-x86_64.zip' $zip `
       '317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a'
@@ -101,10 +101,10 @@ try {
   & $python @setupArgs
   if ($LASTEXITCODE -ne 0) { throw "setup failed (exit $LASTEXITCODE)" }
   Write-Host ""
-  Write-Host "Setup complete. Start the game with Play.bat."
+  Write-Host "[$(Get-Date -Format HH:mm:ss)] Setup complete. Start the game with Play.bat."
 } catch {
   Write-Host ""
-  Write-Host "SETUP FAILED: $_" -ForegroundColor Red
+  Write-Host "[$(Get-Date -Format HH:mm:ss)] SETUP FAILED: $_" -ForegroundColor Red
   Write-Host "Send logs\setup.log and logs\setup_download.log to get help."
 } finally {
   Stop-Transcript | Out-Null

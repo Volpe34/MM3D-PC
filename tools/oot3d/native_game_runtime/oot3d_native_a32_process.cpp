@@ -668,7 +668,16 @@ NativeA32ProcessRunResult NativeA32Process::Run(
                     std::snprintf(encoded, sizeof(encoded), "%08X", exit.pc);
                     return std::string(encoded);
                 }() +
-                " detail=" + std::to_string(exit.detail));
+                " detail=" + std::to_string(exit.detail) + [&] {
+                    // The guest registers, for the crash report.
+                    const auto& regs = CurrentThreadState().r;
+                    char text[160]{};
+                    std::snprintf(text, sizeof(text),
+                                  " r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X sp=%08X lr=%08X",
+                                  regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6], regs[13],
+                                  regs[14]);
+                    return std::string(text);
+                }());
     }
 
     CurrentThreadStatus() = NativeA32ThreadStatus::Ready;

@@ -41,11 +41,12 @@ TITLE = {"id": "mm3d", "program_id": "0004000000125500", "region": 1, "language"
 
 
 def step(text: str) -> None:
-    print(f"\n== {text}", flush=True)
+    # The clock time tells when each step started (and how long the last one took).
+    print(f"\n== [{time.strftime('%H:%M:%S')}] {text}", flush=True)
 
 
 def fail(text: str) -> None:
-    print(f"\nERROR: {text}", flush=True)
+    print(f"\nERROR [{time.strftime('%H:%M:%S')}]: {text}", flush=True)
     raise SystemExit(1)
 
 

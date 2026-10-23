@@ -45,6 +45,21 @@ pull requests are welcome.
 - **Warp:** go to any area of the game from **F1 → Warp** (search by name,
   pick where you arrive and, optionally, a form). It works during normal
   play only, not on the Clock Tower rooftop on the final night.
+- **Cheats:** in **F1 → Cheats**: fly (stick to move, hold A to go up and B
+  to go down), moon jump (hold L + A), infinite health, magic, rupees and
+  ammo, an unbreakable Razor Sword, heart containers, give any item or
+  mask, complete the quest (all items, masks, songs, remains, best gear,
+  20 hearts), freeze time, set the time of day, fight any boss again in
+  its arena (your save is put back when you leave, unless you keep the
+  win), and spawn enemies, mini-bosses and NPCs in front of Link. They
+  change your save, so save a state (F5) first; they are off again at the
+  next launch.
+- **Save states:** save the whole game at any moment and come back to it,
+  in 10 slots. **F5** saves to the selected slot, **F8** loads it, **F6** /
+  **F7** select the previous / next slot; **F1 → Save states** lists the
+  slots with the time they were saved (and deletes them: each one takes
+  about 450 MB). States belong to one version of the port: after an update,
+  older ones may not load (in-game saves always carry over).
 - **Item button letters:** move and resize each item button's letter in
   **F1 → Buttons**, with sliders or by dragging it on screen (mouse wheel to
   resize).
@@ -147,6 +162,9 @@ F1 → Controls.
 
 The camera's turn speed (right stick) and the size of the F1 menu are in
 F1 → Controls.
+
+Keyboard: **F1** settings, **F11** fullscreen, **F5** / **F8** save / load
+a state, **F6** / **F7** previous / next save state slot.
 
 ## How it works
 

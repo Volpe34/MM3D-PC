@@ -59,7 +59,7 @@ def main() -> int:
     TOOLS.mkdir(exist_ok=True)
     zig_dir = TOOLS / "zig"
     if not (zig_dir / "zig").is_file():
-        print("== Downloading the zig toolchain (about 55 MB, ziglang.org)", flush=True)
+        print(f"== [{time.strftime('%H:%M:%S')}] Downloading the zig toolchain (about 55 MB, ziglang.org)", flush=True)
         data = download(*ZIG)
         unpack = TOOLS / "zig-unpack"
         shutil.rmtree(unpack, ignore_errors=True)
@@ -73,7 +73,7 @@ def main() -> int:
         os.chmod(zig_dir / name, 0o755)
     pylib = TOOLS / "pylib"
     if not (pylib / "capstone").is_dir():
-        print("== Downloading capstone 5.0.9 (disassembler, PyPI)", flush=True)
+        print(f"== [{time.strftime('%H:%M:%S')}] Downloading capstone 5.0.9 (disassembler, PyPI)", flush=True)
         with zipfile.ZipFile(io.BytesIO(download(*CAPSTONE))) as wheel:
             wheel.extractall(pylib)
     os.environ["PYTHONPATH"] = str(pylib) + os.pathsep + os.environ.get("PYTHONPATH", "")
@@ -89,9 +89,9 @@ def main() -> int:
         arguments += ["--rom", rest.pop(0)]
     arguments += rest
     if subprocess.run(arguments).returncode != 0:
-        print("\nSETUP FAILED. Send logs/setup.log to get help.")
+        print(f"\n[{time.strftime('%H:%M:%S')}] SETUP FAILED. Send logs/setup.log to get help.")
         return 1
-    print("\nSetup complete. Start the game with ./Play.sh")
+    print(f"\n[{time.strftime('%H:%M:%S')}] Setup complete. Start the game with ./Play.sh")
     return 0
 
 

@@ -197,7 +197,7 @@ def main() -> int:
             if tag not in done:
                 sessions.append((form, batch, tag))
     jobs = args.jobs or default_jobs()
-    print(f"Shader tour: {len(sessions)} sessions, {jobs} at a time "
+    print(f"[{time.strftime('%H:%M:%S')}] Shader tour: {len(sessions)} sessions, {jobs} at a time "
           f"(about {round(len(sessions) * (BOOT_SECONDS + args.seconds * BATCH) / jobs / 60)} minutes).\n"
           "  Small game windows will open and close by themselves many times: this is normal,\n"
           "  it is the setup playing through the areas to prepare the graphics. Do not close them;\n"
@@ -216,8 +216,8 @@ def main() -> int:
                 done_path.write_text(json.dumps(sorted(done)))
             else:
                 failed += 1
-            print(f"  [{finished}/{len(sessions)} {time.time() - started:5.0f}s] {tag}: {status}", flush=True)
-    print(f"Shader tour done: {len(sessions) - failed} sessions recorded, {failed} failed. "
+            print(f"  [{time.strftime('%H:%M:%S')} {finished}/{len(sessions)} {time.time() - started:5.0f}s] {tag}: {status}", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] Shader tour done: {len(sessions) - failed} sessions recorded, {failed} failed. "
           "Play builds the recorded shaders when it starts.", flush=True)
     return 0
 
