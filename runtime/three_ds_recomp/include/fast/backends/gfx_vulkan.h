@@ -79,6 +79,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <unordered_set>
@@ -892,9 +893,23 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkPipeline mNativePicaScanoutPipeline = VK_NULL_HANDLE;
     VkPipeline mNativePicaScanoutOverlayPipeline = VK_NULL_HANDLE;
     VkSampler mNativePicaScanoutSampler = VK_NULL_HANDLE;
-    std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
+    // Looked up for every draw: hashed by the source identities (equal keys
+    // share them; equality still compares the whole key). Never iterated in
+    // an order that matters (only to destroy the modules).
+    struct NativePicaShaderModuleKeyHash {
+        size_t operator()(const NativePicaShaderModuleKey& key) const noexcept {
+            uint64_t hash = 0xcbf29ce484222325ULL;
+            for (const uint64_t part : key.Vertex) hash = (hash ^ part) * 0x100000001b3ULL;
+            for (const uint64_t part : key.Fragment) hash = (hash ^ part) * 0x100000001b3ULL;
+            hash = (hash ^ key.DescriptorSchema) * 0x100000001b3ULL;
+            return static_cast<size_t>(hash ^ (hash >> 29) ^ static_cast<uint64_t>(key.NriInterface));
+        }
+    };
+    std::unordered_map<NativePicaShaderModuleKey, NativePicaShaderProgram,
+                       NativePicaShaderModuleKeyHash>
         mCanonicalNativePicaShaders;
-    std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
+    std::unordered_map<NativePicaShaderModuleKey, NativePicaShaderProgram,
+                       NativePicaShaderModuleKeyHash>
         mInstrumentedNativePicaShaders;
     Oot3d::PicaGeometryRegistry mPicaGeometryRegistry;
     Oot3d::PicaCompositionSchedule mNativePicaCompositionSchedule;
@@ -947,7 +962,18 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint64_t mCustomTextureUploadBytesThisFrame = 0;
     // Custom textures wait for their decode (no pop-in): no upload budget.
     bool mCustomTextureWaitThisFrame = false;
-    std::map<std::vector<uint8_t>, Renderer3ds::PicaDevicePipelineRecord> mNativePicaPipelines;
+    // Looked up once per draw of every game frame: hashed (the memo holds
+    // pointers to records; hash map nodes keep their address). Iterated only
+    // to destroy them all, where the order does not matter.
+    struct NativePicaPipelineKeyHash {
+        size_t operator()(const std::vector<uint8_t>& key) const noexcept {
+            return std::hash<std::string_view>{}(std::string_view(
+                reinterpret_cast<const char*>(key.data()), key.size()));
+        }
+    };
+    std::unordered_map<std::vector<uint8_t>, Renderer3ds::PicaDevicePipelineRecord,
+                       NativePicaPipelineKeyHash>
+        mNativePicaPipelines;
     uint64_t mNextPicaPipelineId = 1;
     uint64_t mNativePicaVulkanPipelineCreations = 0;
     uint64_t mNativePicaVulkanShaderPairCreations = 0;

@@ -3,9 +3,15 @@
 #include "a32_vfp_binary64.h"
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <xmmintrin.h>
+#endif
 
 namespace oot3d::recomp::a32 {
 namespace {
@@ -114,12 +120,7 @@ constexpr Control ControlFromFpscr(std::uint32_t fpscr) noexcept {
 }
 
 unsigned BitLength(std::uint64_t value) noexcept {
-    unsigned length = 0U;
-    while (value != 0U) {
-        ++length;
-        value >>= 1U;
-    }
-    return length;
+    return static_cast<unsigned>(std::bit_width(value));
 }
 
 std::uint64_t ShiftRightJam(std::uint64_t value, unsigned shift) noexcept {
@@ -285,8 +286,20 @@ Result RoundFinite(
         } else {
             scaled_denominator <<= static_cast<unsigned>(-shift);
         }
-        std::uint64_t significand = scaled_numerator / scaled_denominator;
-        const std::uint64_t remainder = scaled_numerator % scaled_denominator;
+        // Add, multiply and integer conversion pass denominator 1, so the
+        // scaled denominator is a power of two: the quotient and remainder
+        // are a shift and a mask (the same values as the division).
+        std::uint64_t significand = 0U;
+        std::uint64_t remainder = 0U;
+        if (denominator == 1U) {
+            const unsigned right_shift =
+                shift >= 0 ? 0U : static_cast<unsigned>(-shift);
+            significand = scaled_numerator >> right_shift;
+            remainder = scaled_numerator & (scaled_denominator - 1U);
+        } else {
+            significand = scaled_numerator / scaled_denominator;
+            remainder = scaled_numerator % scaled_denominator;
+        }
         if (Increment(
                 significand,
                 remainder,
@@ -372,10 +385,119 @@ constexpr Result F32Abs(std::uint32_t bits) noexcept {
     return {bits & ~kSignBit, 0U};
 }
 
+// Host fast path for the common case of the exact operations below. It is
+// taken only when its result and flags provably equal the bit-exact path:
+// round-to-nearest in both the guest FPSCR and the host MXCSR, operands that
+// are zero or normal with exponents far from the subnormal and overflow
+// ranges (so no denormal, infinity or NaN can appear anywhere, which also
+// makes FZ, DN and a host FTZ/DAZ irrelevant), and an inexact flag computed
+// exactly (TwoSum for addition, the exact double product for
+// multiplication). Everything else takes the exact integer path.
+// TRIAEVUM_SOFT_VFP=1 disables it.
+#if defined(__x86_64__) || defined(_M_X64)
+const bool kHostVfpFastPath = std::getenv("TRIAEVUM_SOFT_VFP") == nullptr;
+
+// MXCSR rounds to nearest. Read from two additions rather than stmxcsr (two
+// thirds of a fast-path operation's time): 1 + 0.75 ulp and 1 + 0.25 ulp give
+// 1 + ulp and 1 only when rounding to nearest (toward +inf gives 1 + ulp
+// twice, toward zero or -inf 1 twice). Normal values, so DAZ/FTZ do not
+// matter. The volatile asm keeps them from being folded or reused across a
+// rounding change.
+inline bool HostRoundsToNearest() noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    float one = 1.0F;
+    __asm__ volatile("" : "+x"(one));
+    const float up = one + 0x1.8p-24F;
+    const float down = one + 0x1.0p-25F;
+    return up == 0x1.000002p0F && down == 1.0F;
+#else
+    return (_mm_getcsr() & 0x6000U) == 0U;
+#endif
+}
+
+inline bool HostFastOperand(std::uint32_t bits) noexcept {
+    const std::uint32_t magnitude = bits & ~kSignBit;
+    const std::uint32_t exponent = magnitude >> 23U;
+    return magnitude == 0U || (exponent >= 32U && exponent <= 250U);
+}
+
+inline bool HostFastAdd(
+    std::uint32_t a, std::uint32_t b, const Control& control,
+    Result* result) noexcept {
+    if (!kHostVfpFastPath || control.rounding != RoundingMode::NearestEven ||
+        !HostFastOperand(a) || !HostFastOperand(b) || !HostRoundsToNearest()) {
+        return false;
+    }
+    // Every intermediate is a multiple of 2^-118 below 2^125: exact TwoSum.
+    const float x = std::bit_cast<float>(a);
+    const float y = std::bit_cast<float>(b);
+    const float sum = x + y;
+    const float y_part = sum - x;
+    const float x_part = sum - y_part;
+    const float error = (x - x_part) + (y - y_part);
+    *result = {std::bit_cast<std::uint32_t>(sum),
+               error != 0.0F ? kFpscrIxc : 0U};
+    return true;
+}
+
+inline bool HostFastMul(
+    std::uint32_t a, std::uint32_t b, const Control& control,
+    Result* result) noexcept {
+    if (!kHostVfpFastPath || control.rounding != RoundingMode::NearestEven ||
+        !HostFastOperand(a) || !HostFastOperand(b)) {
+        return false;
+    }
+    const std::uint32_t left_exponent = (a & ~kSignBit) >> 23U;
+    const std::uint32_t right_exponent = (b & ~kSignBit) >> 23U;
+    if (left_exponent != 0U && right_exponent != 0U) {
+        // The product's exponent field is this or one more: keep it normal.
+        const int product_exponent =
+            static_cast<int>(left_exponent + right_exponent) - 127;
+        if (product_exponent < 8 || product_exponent > 245) {
+            return false;
+        }
+    }
+    if (!HostRoundsToNearest()) {
+        return false;
+    }
+    const float x = std::bit_cast<float>(a);
+    const float y = std::bit_cast<float>(b);
+    const float product = x * y;
+    const double exact = static_cast<double>(x) * static_cast<double>(y);
+    *result = {std::bit_cast<std::uint32_t>(product),
+               static_cast<double>(product) != exact ? kFpscrIxc : 0U};
+    return true;
+}
+
+inline bool HostFastFromSigned(
+    std::uint32_t value, const Control& control, Result* result) noexcept {
+    if (!kHostVfpFastPath || control.rounding != RoundingMode::NearestEven ||
+        !HostRoundsToNearest()) {
+        return false;
+    }
+    const std::int32_t integer = static_cast<std::int32_t>(value);
+    const float converted = static_cast<float>(integer);
+    *result = {std::bit_cast<std::uint32_t>(converted),
+               static_cast<double>(converted) != static_cast<double>(integer)
+                   ? kFpscrIxc : 0U};
+    return true;
+}
+#else
+inline bool HostFastAdd(std::uint32_t, std::uint32_t, const Control&,
+                        Result*) noexcept { return false; }
+inline bool HostFastMul(std::uint32_t, std::uint32_t, const Control&,
+                        Result*) noexcept { return false; }
+inline bool HostFastFromSigned(std::uint32_t, const Control&,
+                               Result*) noexcept { return false; }
+#endif
+
 Result F32Add(
     std::uint32_t a,
     std::uint32_t b,
     const Control& control) noexcept {
+    if (Result fast{}; HostFastAdd(a, b, control, &fast)) {
+        return fast;
+    }
     std::uint32_t flags = 0U;
     const std::array<Unpacked, 2> values = {
         Unpack(a, control, &flags),
@@ -467,6 +589,9 @@ Result F32Mul(
     std::uint32_t a,
     std::uint32_t b,
     const Control& control) noexcept {
+    if (Result fast{}; HostFastMul(a, b, control, &fast)) {
+        return fast;
+    }
     std::uint32_t flags = 0U;
     const std::array<Unpacked, 2> values = {
         Unpack(a, control, &flags),
@@ -677,6 +802,9 @@ Result F32FromUnsigned(std::uint32_t value, const Control& control) noexcept {
 }
 
 Result F32FromSigned(std::uint32_t value, const Control& control) noexcept {
+    if (Result fast{}; HostFastFromSigned(value, control, &fast)) {
+        return fast;
+    }
     const std::int64_t signed_value = static_cast<std::int32_t>(value);
     const bool sign = signed_value < 0;
     const std::uint64_t magnitude = sign

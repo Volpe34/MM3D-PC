@@ -1,7 +1,10 @@
 #include "fast/oot3d/grass_interaction_field.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
 
 namespace Fast::Oot3d {
@@ -142,8 +145,22 @@ void GrassInteractionField::UpdateActors(
     const uint32_t steps =
         std::max(1U, static_cast<uint32_t>(std::ceil(dt * 120.0F)));
     const float step = steps > 0U ? dt / static_cast<float>(steps) : 0.0F;
+    // A cell whose displacement and velocity are all +0.0 stays exactly +0.0
+    // through a step with finite coefficients; the step only clears its
+    // interaction height. Most of the field is at rest, so this skips the
+    // spring math for it (TRIAEVUM_NO_GRASS_REST_SKIP=1 runs every cell).
+    static const bool noRestSkip =
+        std::getenv("TRIAEVUM_NO_GRASS_REST_SKIP") != nullptr;
+    const bool restSkip = !noRestSkip && std::isfinite(spring) &&
+                          std::isfinite(damping) && std::isfinite(step);
     for (uint32_t substep = 0; substep < steps && step > 0.0F; ++substep) {
         for (size_t index = 0; index < mDisplacement.size(); ++index) {
+            if (restSkip &&
+                std::bit_cast<uint64_t>(mDisplacement[index]) == 0U &&
+                std::bit_cast<uint64_t>(mVelocity[index]) == 0U) {
+                mInteractionHeight[index] = kNoInteractionHeight;
+                continue;
+            }
             for (size_t axis = 0; axis < 2; ++axis) {
                 mVelocity[index][axis] +=
                     (-spring * mDisplacement[index][axis] -

@@ -109,6 +109,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -118,6 +119,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -2868,6 +2870,64 @@ RunUntilGuestWait(Oot3dNativeGame::NativeA32Process &process,
   return result;
 }
 
+// TRIAEVUM_GUEST_THREAD: runs one guest step at a time on its own thread.
+class GuestStepWorker {
+public:
+  GuestStepWorker() : mThread([this] { Loop(); }) {}
+  ~GuestStepWorker() {
+    {
+      std::lock_guard lock(mMutex);
+      mStop = true;
+    }
+    mWake.notify_all();
+    mThread.join();
+  }
+  std::thread::id Id() const { return mThread.get_id(); }
+  void Launch(std::function<void()> job) {
+    {
+      std::lock_guard lock(mMutex);
+      mJob = std::move(job);
+      mDone = false;
+    }
+    mWake.notify_all();
+  }
+  // Waits for the launched step (rethrows its exception).
+  void Wait() {
+    std::unique_lock lock(mMutex);
+    mWake.wait(lock, [this] { return mDone; });
+    if (mError) std::rethrow_exception(std::exchange(mError, nullptr));
+  }
+
+private:
+  void Loop() {
+    std::unique_lock lock(mMutex);
+    for (;;) {
+      mWake.wait(lock, [this] { return mStop || mJob != nullptr; });
+      if (mStop) return;
+      auto job = std::move(mJob);
+      mJob = nullptr;
+      lock.unlock();
+      std::exception_ptr error;
+      try {
+        job();
+      } catch (...) {
+        error = std::current_exception();
+      }
+      lock.lock();
+      mError = error;
+      mDone = true;
+      mWake.notify_all();
+    }
+  }
+  std::mutex mMutex;
+  std::condition_variable mWake;
+  std::function<void()> mJob;
+  bool mDone = true;
+  bool mStop = false;
+  std::exception_ptr mError;
+  std::thread mThread;
+};
+
 void RequireRunnableGuest(
     const Oot3dNativeGame::NativeA32ProcessRunResult &result) {
   if (result.Kind == Oot3dNativeGame::NativeA32ProcessRunKind::Faulted) {
@@ -4342,9 +4402,18 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   }
   Oot3dNativeGame::Oot3dNativePicaSubmissionQueue submissionQueue(
       picaMemoryView, true);
+  // TRIAEVUM_GUEST_THREAD: a guest step that submits GPU work resolves
+  // fonts on its worker while this thread may resolve UI textures.
+  bool guestThreadFontLock = false;  // set once the guest-step worker exists
+  std::mutex hdFontsMutex;
+  const auto lockHdFonts = [&] {
+    return guestThreadFontLock ? std::unique_lock(hdFontsMutex)
+                               : std::unique_lock<std::mutex>();
+  };
   if (hdFontsLoaded) submissionQueue.SetTextureSnapshotTransform(
       [&](const Oot3dNativeGame::Oot3dPicaTextureState& texture,
           Oot3dNativeGame::Oot3dPicaResourceSnapshot& resource) {
+        const auto lock = lockHdFonts();
         hdFonts.Resolve(picaMemoryView, texture, resource);
       });
   if (topScreenTextureOverrideRuntime.has_value()) {
@@ -4428,6 +4497,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   if (hdFontsLoaded) nativeUiTextureProvider.SetGeneratedTextureTransform(
       [&](const Oot3dNativeGame::Oot3dPicaTextureState& texture,
           Oot3dNativeGame::Oot3dPicaResourceSnapshot& resource) {
+        const auto lock = lockHdFonts();
         hdFonts.Resolve(picaMemoryView, texture, resource);
       });
   Oot3dNativeGame::TopScreenOcarinaTextRuntime ocarinaText(process.Memory(), nativeUiTextureProvider);
@@ -5473,6 +5543,89 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::optional<uint32_t> automatedStateSavedAtRunFrame;
   std::optional<uint32_t> automatedStateSavedAtGuestFrame;
 
+  // F1 > Display > "Game logic on its own thread" (MM3D; off by default;
+  // TRIAEVUM_GUEST_THREAD=1/0 forces it on/off; it applies from the next
+  // frame, no restart): the game logic that the
+  // next refresh's timer wake-ups run (AdvanceGuestClockTo, ~4.5 ms every
+  // other refresh) starts on a worker as soon as a host frame ends: its
+  // inputs are final then (that refresh's HID is written after it). Until
+  // the refresh consumes it, this thread sees guest memory as it was before
+  // the step (NativeA32Memory host snapshot), reads the guest-written host
+  // state below from copies, and anything that must touch guest state
+  // directly first waits for the step (counted as a barrier: the only case
+  // whose order differs from the serial loop). The first steps (each step
+  // with TRIAEVUM_GUEST_THREAD_VERIFY=1) check that every changed page had a
+  // saved copy; a miss (a title module built before this code) turns it off.
+  const bool guestThreadAvailable =
+      foreignTitle && manifest->Title.Id == "mm3d" &&
+      launch.UiProfile != Oot3dNativeGame::Oot3dUiProfile::TopScreen &&
+      !launch.ProfileA32Blocks && !widescreenProjection.TraceA32Blocks &&
+      !scenarioBootstrap.has_value();
+  const bool guestThreadVerify =
+      std::getenv("TRIAEVUM_GUEST_THREAD_VERIFY") != nullptr;
+  const char *guestThreadOverride = std::getenv("TRIAEVUM_GUEST_THREAD");
+  const auto guestThreadWanted = [&] {
+    if (!guestThreadAvailable) return false;
+    if (guestThreadOverride != nullptr) return std::string_view(guestThreadOverride) == "1";
+    return Fast::Oot3d::GraphicsSettingsRuntime::Instance().Snapshot().GuestThread;
+  };
+  std::optional<GuestStepWorker> guestStepWorker;
+  struct GuestStepState {
+    bool Pending = false;
+    uint64_t Deadline = 0;
+    Oot3dNativeGame::NativeA32ProcessRunResult ProcessResult{};
+    Oot3dNativeGame::NativeGuestClockDeadlineResolution Resolution{};
+    // Guest-written host state as of the step's start.
+    std::vector<std::string> LowerLayoutNames;
+    std::vector<uint32_t> PauseTextures;
+    uint32_t CaptureObject = 0;
+    uint32_t LastPlayStateAddress = 0;
+    bool LcdForceBlack = false;
+    decltype(hostServices.TopFramebuffer()) TopFramebuffer;
+    decltype(hostServices.BottomFramebuffer()) BottomFramebuffer;
+    // Written meanwhile by this thread, applied when the step ends.
+    std::optional<Oot3dNativeGame::Oot3dPicaCompositionDomain> PendingDomain;
+    uint64_t Launched = 0, Consumed = 0, Discarded = 0, Barriers = 0,
+             GpuWorkSteps = 0;
+    double WorkerSeconds = 0.0, WaitSeconds = 0.0, BookkeepingSeconds = 0.0;
+    bool Disabled = false;
+  } guestStep;
+  const auto guestStepInFlight = [&] {
+    return process.Memory().HostSnapshotActive();
+  };
+  // Ends the step's snapshot once the worker is done (waits for it).
+  const auto finishGuestStep = [&] {
+    if (!guestStepInFlight()) return;
+    const auto waitStart = std::chrono::steady_clock::now();
+    guestStepWorker->Wait();
+    guestStep.WaitSeconds += SecondsSince(waitStart);
+    const auto endStart = std::chrono::steady_clock::now();
+    process.Memory().EndHostSnapshot();
+    guestStep.BookkeepingSeconds += SecondsSince(endStart);
+    if (!guestStep.Disabled && process.Memory().SnapshotStats().UnsavedChangedPages != 0U) {
+      guestStep.Disabled = true;
+      std::fprintf(stderr, "[guest-thread] guest memory changed outside the snapshot "
+                           "(title module older than this build?): turned off\n");
+    }
+    if (guestStep.PendingDomain.has_value()) {
+      picaCompositionDomain = *std::exchange(guestStep.PendingDomain, std::nullopt);
+    }
+    if (!submissionQueue.PendingDraws().empty() ||
+        !submissionQueue.PendingCompletions().empty() ||
+        !submissionQueue.PendingDisplayTransfers().empty() ||
+        !submissionQueue.PendingMemoryFills().empty()) {
+      ++guestStep.GpuWorkSteps;
+    }
+  };
+  const auto hostLowerLayoutNames = [&]() -> const std::vector<std::string> & {
+    return guestStepInFlight() ? guestStep.LowerLayoutNames
+                               : widescreenProjection.LowerLayoutNames;
+  };
+  const auto hostPauseTextures = [&]() -> const std::vector<uint32_t> & {
+    return guestStepInFlight() ? guestStep.PauseTextures
+                               : widescreenProjection.PauseTextures;
+  };
+
   const auto saveState = [&](const std::filesystem::path &path) {
     // Host-owned continuation registers must never escape into a standalone savestate.
     if (ocarinaText.Pending()) return false;
@@ -5608,6 +5761,11 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     return true;
   };
   const auto loadState = [&](const std::filesystem::path &path) {
+    if (guestStep.Pending) {
+      finishGuestStep();
+      guestStep.Pending = false;
+      ++guestStep.Discarded;
+    }
     const auto started = std::chrono::steady_clock::now();
     Oot3dNativeGame::NativeA32SavestateRuntimeState runtime;
     Oot3dNativeGame::NativeA32SavestateIoResult ioResult;
@@ -5762,8 +5920,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     const auto phaseBeforeFrame = phaseTiming.Values();
     const double nestedGuestBeforeFrame = phaseTiming.GuestInsidePicaSubmitSeconds;
     const double guestClockBeforeFrame = phaseTiming.GuestClockSeconds;
-    widescreenProjection.CurrentHostFrame =
-        static_cast<uint32_t>(presentationFrameCount);
+    if (!guestStepInFlight()) {
+      widescreenProjection.CurrentHostFrame =
+          static_cast<uint32_t>(presentationFrameCount);
+    }
     WindowDemoFrameTiming frameTiming;
     if (!PrepareNextWindowDemoFrame(hostArgs, window, timing, frameTiming)) {
       continue;
@@ -5949,8 +6109,11 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
 
     const uint32_t width = std::max<uint32_t>(1, window.GetWidth());
     const uint32_t height = std::max<uint32_t>(1, window.GetHeight());
-    hdFonts.SetOutputHeight(height);
-    updateScenePresentation();
+    {
+      const auto lock = lockHdFonts();
+      hdFonts.SetOutputHeight(height);
+    }
+    if (!guestStepInFlight()) updateScenePresentation();
     phaseStart = std::chrono::steady_clock::now();
     window.GetMouseStateManager()->StartFrame();
     gui->StartDraw();
@@ -6025,7 +6188,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       mm3dScreen = -1;
       // A menu (Notebook..ocarina) being opened, not yet active.
       bool menuOpening = false;
-      shownLowerLayouts = widescreenProjection.LowerLayoutNames;
+      shownLowerLayouts = hostLowerLayoutNames();
       bool menuLayout = false;
       bool insetLayout = false;
       bool fileSelectShown = false;
@@ -6111,7 +6274,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             observations.pop_back();  // a newer reading of the same frame
           }
           observations.push_back({presented + 1U, mm3dScreen, menuOpening, titleShown, fileSelectShown,
-                                  widescreenProjection.LowerLayoutNames});
+                                  hostLowerLayoutNames()});
           while (observations.size() > 1U && observations[1].Sequence <= presented) observations.pop_front();
           while (observations.size() > 8U) observations.pop_front();
           if (!live && manifest->Title.Id == "mm3d") {
@@ -6192,8 +6355,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         // The lower screen's layouts, logged when they change (names of UIs
         // still to lay out on one screen show up in logs/last_run.log).
         static std::vector<std::string> loggedLowerLayouts;
-        if (widescreenProjection.LowerLayoutNames != loggedLowerLayouts) {
-          loggedLowerLayouts = widescreenProjection.LowerLayoutNames;
+        if (hostLowerLayoutNames() != loggedLowerLayouts) {
+          loggedLowerLayouts = hostLowerLayoutNames();
           std::string joined;
           for (const auto &name : loggedLowerLayouts) joined += (joined.empty() ? "" : ",") + name;
           std::fprintf(stderr, "[layouts] frame %u screen %d lower: %s\n", frameCount, mm3dScreen,
@@ -6210,7 +6373,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         // Notebook, Gear, Items, Map, Masks: both screens side by side;
         // ocarina: its song list as an inset. Only while the lower screen
         // draws something (not on the black "Dawn of" screen).
-        if (widescreenProjection.PauseCaptured) {
+        // (A guest step never starts while it is set.)
+        if (!guestStepInFlight() && widescreenProjection.PauseCaptured) {
           widescreenProjection.PauseCaptured = false;
           pauseFreezePending = true;
           if (std::getenv("TRIAEVUM_SCREEN_DEBUG"))
@@ -6298,10 +6462,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         static std::vector<uint32_t> ruleTextures;
         if ((singleScreen.MergedMenu != upperUiLayerEnabled ||
              (upperUiLayerEnabled &&
-              ruleTextures != widescreenProjection.PauseTextures)) &&
+              ruleTextures != hostPauseTextures())) &&
             hudLayerEnabled) {
           upperUiLayerEnabled = singleScreen.MergedMenu;
-          ruleTextures = widescreenProjection.PauseTextures;
+          ruleTextures = hostPauseTextures();
           Fast::Renderer3ds::PicaHudLayerRule rule;
           rule.Slot = 1U;
           rule.Enabled = upperUiLayerEnabled;
@@ -6316,10 +6480,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           rule.OverlayColorPhysicalAddress = kUpperUiLayerColorAddress;
           rule.OverlayDepthPhysicalAddress = 0x18D00000U;
           // The pause background stays on the screen.
-          rule.ExcludedTextureAddresses = widescreenProjection.PauseTextures;
+          rule.ExcludedTextureAddresses = hostPauseTextures();
           if (std::getenv("TRIAEVUM_SCREEN_DEBUG") != nullptr) {
             std::fprintf(stderr, "[merged] %d pause textures %zu\n", upperUiLayerEnabled ? 1 : 0,
-                         widescreenProjection.PauseTextures.size());
+                         hostPauseTextures().size());
           }
           api.SetPicaHudLayerRule(rule);
           // In menus the lower layer keeps the item icons (gameplay hides
@@ -6395,7 +6559,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         !foreignTitle &&
         process.Memory().Read32(kNativeGameMode, &topScreenNativeGameMode) &&
         Oot3dNativeGame::IsTopScreenGameplayInputMode(topScreenNativeGameMode);
-    picaCompositionDomain =
+    auto frameCompositionDomain =
         topScreenGameplayInputMode
             ? Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene
             : Oot3dNativeGame::Oot3dPicaCompositionDomain::Unknown;
@@ -6404,7 +6568,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       // MM3D gameplay: the upper screen is the world (its HUD is mostly on
       // the lower screen, laid over it afterwards), so the F1 anti-aliasing
       // and effects apply to it. Menus stay untouched.
-      picaCompositionDomain = Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene;
+      frameCompositionDomain = Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene;
+    }
+    if (guestStepInFlight()) {
+      guestStep.PendingDomain = frameCompositionDomain;
+    } else {
+      picaCompositionDomain = frameCompositionDomain;
     }
     bool topScreenStartRoutingEligible =
         uiLifecycleBridge.NativeGameplayPresentationActive() &&
@@ -6427,8 +6596,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         const char *value = std::getenv("TRIAEVUM_CAMERA_STICK_SPEED");
         return value != nullptr ? std::strtof(value, nullptr) : 0.0F;
       }();
-      widescreenProjection.CameraStickSpeed =
-          cameraSpeedOverride > 0.0F ? cameraSpeedOverride : controls.CameraStickSpeed;
+      if (!guestStepInFlight()) {
+        widescreenProjection.CameraStickSpeed =
+            cameraSpeedOverride > 0.0F ? cameraSpeedOverride : controls.CameraStickSpeed;
+      }
       // F1 menu size: the setting, or 1 per 1080 window lines in steps of
       // a half (1x up to 1440p, 2x at 4K).
       static float appliedMenuScale = 1.0F;
@@ -6550,11 +6721,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     Oot3dNativeGame::NativeA32InputFrame inputFrame;
     phaseTiming.InputPollSeconds += SecondsSince(inputPhaseStart);
     // Between frames (the renderer is idle; the guest runs after StartFrame).
-    if (manifest->Title.Id == "mm3d" && widescreenProjection.CaptureObject != 0U) {
+    const uint32_t hostCaptureObject =
+        guestStepInFlight() ? guestStep.CaptureObject : widescreenProjection.CaptureObject;
+    if (manifest->Title.Id == "mm3d" && hostCaptureObject != 0U) {
       // A capture converts next frame (+0x1D == 1): its RGB8 sources get the
       // presented top screen read back, scaled to the native 240x400.
       auto &memory = process.Memory();
-      const uint32_t object = widescreenProjection.CaptureObject;
+      const uint32_t object = hostCaptureObject;
       uint8_t stage = 0, mode = 0;
       static bool filled = false;
       if (memory.Read8(object + 0x1DU, &stage) && stage == 1U) {
@@ -6773,7 +6946,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           Oot3dNativeGame::SetTriAevumHudParts(mm3dHudParts(minimapShown));
         }
         if (foreignTitle && manifest->Title.Id == "mm3d") {
-          const auto &layouts = widescreenProjection.LowerLayoutNames;
+          const auto &layouts = hostLowerLayoutNames();
           // Interactive once its cursor exists (before that A dismisses the
           // "select an item on the lower screen" message).
           const bool giveMenu = std::find(layouts.begin(), layouts.end(), "MenuItemPresen") != layouts.end() &&
@@ -7088,9 +7261,21 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         nextVblankTick += refreshTickRemainder / kGuestDisplayRefreshRate;
         refreshTickRemainder %= kGuestDisplayRefreshRate;
         const auto clockStart = std::chrono::steady_clock::now();
-        const auto clockResolution = AdvanceGuestClockTo(
-            process, hostServices, processResult, nextVblankTick,
-            launch.WholeAotBlockBudget);
+        const auto clockResolution = [&] {
+          if (guestStep.Pending) {
+            // This refresh's logic already ran on the guest-step worker.
+            finishGuestStep();
+            guestStep.Pending = false;
+            if (guestStep.Deadline != nextVblankTick) {
+              throw std::runtime_error("guest step ran to another refresh deadline");
+            }
+            ++guestStep.Consumed;
+            processResult = guestStep.ProcessResult;
+            return guestStep.Resolution;
+          }
+          return AdvanceGuestClockTo(process, hostServices, processResult,
+                                     nextVblankTick, launch.WholeAotBlockBudget);
+        }();
         const double clockSeconds = SecondsSince(clockStart);
         phaseTiming.GuestClockSeconds += clockSeconds;
         phaseTiming.GuestSeconds += clockSeconds;
@@ -7196,8 +7381,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             flushedPicaDependency = true;
           }
         }
-        const bool lcdForceBlack = hostServices.LcdForceBlack();
-        const auto topFramebuffer = hostServices.TopFramebuffer();
+        const bool lcdForceBlack = guestStepInFlight() ? guestStep.LcdForceBlack
+                                                       : hostServices.LcdForceBlack();
+        const auto topFramebuffer = guestStepInFlight() ? guestStep.TopFramebuffer
+                                                        : hostServices.TopFramebuffer();
         const Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission
             *traceSelectedTopTransfer = nullptr;
         if (topFramebuffer.has_value()) {
@@ -7249,7 +7436,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     picaPresentationScheduler.FinishFrame(selected->second);
                 if (currentVisualFrame.has_value()) {
                   Oot3dNativeGame::PublishNativeActorInteractions(
-                      process.Memory(), sceneViewProbe.Stats().LastPlayStateAddress, currentVisualFrame->Sequence);
+                      process.Memory(),
+                      guestStepInFlight() ? guestStep.LastPlayStateAddress
+                                          : sceneViewProbe.Stats().LastPlayStateAddress,
+                      currentVisualFrame->Sequence);
                   Oot3dNativeGame::ComposeTopScreenFrontendFrame(
                       *currentVisualFrame,
                       Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
@@ -7555,7 +7745,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               Oot3dNativeGame::ShouldPresentNativeBottomFrontend(
                   launch.UiProfile,
                   uiLifecycleBridge.NativeFrontendPresentationActive());
-          const auto bottomFramebuffer = hostServices.BottomFramebuffer();
+          const auto bottomFramebuffer = guestStepInFlight() ? guestStep.BottomFramebuffer
+                                                             : hostServices.BottomFramebuffer();
           static const bool layoutDebug =
               std::getenv("TRIAEVUM_LAYOUT_DEBUG") != nullptr;
           if (layoutDebug && foreignTitle &&
@@ -7697,7 +7888,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0))
                                         : 31U;
               }();
-              for (const uint32_t texture : widescreenProjection.PauseTextures) {
+              for (const uint32_t texture : hostPauseTextures()) {
                 if (std::find(substitutedPauseTextures.begin(),
                               substitutedPauseTextures.end(),
                               texture) != substitutedPauseTextures.end()) {
@@ -7859,7 +8050,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             };
             const bool slotButtonsInHud =
                 mm3dScreen == 1 && (mm3dAppliedHud == 0 || mm3dAppliedHud == 1) &&
-                gameplayOnly(shownLowerLayouts) && gameplayOnly(widescreenProjection.LowerLayoutNames) &&
+                gameplayOnly(shownLowerLayouts) && gameplayOnly(hostLowerLayoutNames()) &&
                 !singleScreen.MergedMenu && screenPlacements.Upper.has_value() &&
                 singleScreen.InsetBlend <= 0.0F && !singleScreen.LowerOverlay;
             const bool slotButtonsInMenu =
@@ -8677,7 +8868,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       // The guest's software keyboard: type the text on the PC keyboard.
       static std::array<char, 64> keyboardText{'L', 'i', 'n', 'k'};
       static bool keyboardFocus = true;
-      if (const auto maxLength = hostServices.PendingKeyboardMaxLength()) {
+      // (A guest step never starts while a request is pending.)
+      if (const auto maxLength = guestStepInFlight()
+                                     ? std::nullopt
+                                     : hostServices.PendingKeyboardMaxLength()) {
         const ImGuiViewport *viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(
             ImVec2(viewport->Pos.x + viewport->Size.x * 0.5F,
@@ -8849,6 +9043,26 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     }
 #endif
     const auto completedFrameTime = std::chrono::steady_clock::now();
+    // TRIAEVUM_PHASE_TRACE=<file>: per host frame, game frame count, wall ms
+    // since the previous frame ended, then ms of guest (all), guest clock,
+    // guest resumed inside the PICA drain, visual presentation, PICA drain,
+    // present and pacing wait.
+    static FILE *phaseTrace = [] {
+      const char *path = std::getenv("TRIAEVUM_PHASE_TRACE");
+      return path != nullptr ? std::fopen(path, "w") : nullptr;
+    }();
+    if (phaseTrace != nullptr) {
+      static auto previousFrameEnd = completedFrameTime;
+      const auto phases = phaseTiming.Values();
+      const auto ms = [&](size_t index) { return (phases[index] - phaseBeforeFrame[index]) * 1000.0; };
+      std::fprintf(phaseTrace, "%llu %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                   static_cast<unsigned long long>(frameCount),
+                   std::chrono::duration<double, std::milli>(completedFrameTime - previousFrameEnd).count(),
+                   ms(0), (phaseTiming.GuestClockSeconds - guestClockBeforeFrame) * 1000.0,
+                   (phaseTiming.GuestInsidePicaSubmitSeconds - nestedGuestBeforeFrame) * 1000.0,
+                   ms(11), ms(7), ms(13), ms(14));
+      previousFrameEnd = completedFrameTime;
+    }
     if (!benchmarkMeasurementStarted &&
         runFrameCount >= hostArgs.BenchmarkWarmupFrames) {
       benchmarkMeasurementStart = completedFrameTime;
@@ -8903,7 +9117,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         saveStateSlots->Report(name + " could not be loaded (saved by another version of the port?)");
       }
     } else {
-      if (saveSlotPending != 0 && saveState(saveStateSlots->Path(saveSlotPending))) {
+      if (saveSlotPending != 0 && !guestStep.Pending &&
+          saveState(saveStateSlots->Path(saveSlotPending))) {
         saveStateSlots->Report("Saved to slot " + std::to_string(saveSlotPending));
         saveSlotPending = 0;
       }
@@ -8916,7 +9131,78 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         automatedStateSavedAtGuestFrame = frameCount;
       }
     }
+    if (!guestStep.Disabled && !guestStep.Pending && window.IsRunning() && guestThreadWanted() &&
+        processResult.Kind != Oot3dNativeGame::NativeA32ProcessRunKind::Terminated &&
+        saveSlotPending == 0 && pendingTextureCopyCompletions.empty() &&
+        !widescreenProjection.PauseCaptured &&
+        !hostServices.PendingKeyboardMaxLength().has_value() &&
+        !(launch.SaveStateFrameAvailable && !automatedStateSaved &&
+          runFrameCount + 16U >= launch.SaveStateFrame)) {
+      // The next refresh's deadline, as its refresh computes it.
+      const uint64_t remainder = refreshTickRemainder + kCtrArm11TicksPerSecond;
+      const uint64_t deadline = nextVblankTick + remainder / kGuestDisplayRefreshRate;
+      const auto wakeTick = hostServices.NextSleepWakeTick();
+      uint8_t captureStage = 0;
+      const bool captureDue =
+          widescreenProjection.CaptureObject != 0U &&
+          process.Memory().Read8(widescreenProjection.CaptureObject + 0x1DU, &captureStage) &&
+          captureStage == 1U;
+      if (wakeTick.has_value() && *wakeTick <= deadline && !captureDue) {
+        guestStep.Pending = true;
+        guestStep.Deadline = deadline;
+        guestStep.LowerLayoutNames = widescreenProjection.LowerLayoutNames;
+        guestStep.PauseTextures = widescreenProjection.PauseTextures;
+        guestStep.CaptureObject = widescreenProjection.CaptureObject;
+        guestStep.LastPlayStateAddress = sceneViewProbe.Stats().LastPlayStateAddress;
+        guestStep.LcdForceBlack = hostServices.LcdForceBlack();
+        guestStep.TopFramebuffer = hostServices.TopFramebuffer();
+        guestStep.BottomFramebuffer = hostServices.BottomFramebuffer();
+        ++guestStep.Launched;
+        if (!guestStepWorker.has_value()) {
+          guestStepWorker.emplace();
+          guestThreadFontLock = true;
+        }
+        const auto beginStart = std::chrono::steady_clock::now();
+        process.Memory().BeginHostSnapshot(
+            guestStepWorker->Id(),
+            [&] {
+              ++guestStep.Barriers;
+              finishGuestStep();
+            },
+            guestThreadVerify || guestStep.Launched <= 3U);
+        guestStep.BookkeepingSeconds += SecondsSince(beginStart);
+        guestStepWorker->Launch([&, deadline, result = processResult]() mutable {
+          const auto started = std::chrono::steady_clock::now();
+          guestStep.Resolution = AdvanceGuestClockTo(
+              process, hostServices, result, deadline, launch.WholeAotBlockBudget);
+          guestStep.ProcessResult = result;
+          guestStep.WorkerSeconds += SecondsSince(started);
+        });
+      }
+    }
     ApplyWindowDemoFrameLimit(hostArgs, window, runFrameCount);
+  }
+  if (guestStep.Pending) {
+    finishGuestStep();
+    guestStep.Pending = false;
+    processResult = guestStep.ProcessResult;
+  }
+  if (guestStepWorker.has_value()) {
+    const auto &stats = process.Memory().SnapshotStats();
+    std::fprintf(stderr,
+                 "[guest-thread] steps %llu consumed %llu discarded %llu barriers %llu "
+                 "gpu-work %llu worker %.1f ms waited %.1f ms bookkeeping %.1f ms saved pages %llu host reads %llu "
+                 "unsaved changed pages %llu\n",
+                 static_cast<unsigned long long>(guestStep.Launched),
+                 static_cast<unsigned long long>(guestStep.Consumed),
+                 static_cast<unsigned long long>(guestStep.Discarded),
+                 static_cast<unsigned long long>(guestStep.Barriers),
+                 static_cast<unsigned long long>(guestStep.GpuWorkSteps),
+                 guestStep.WorkerSeconds * 1000.0, guestStep.WaitSeconds * 1000.0,
+                 guestStep.BookkeepingSeconds * 1000.0,
+                 static_cast<unsigned long long>(stats.SavedPages),
+                 static_cast<unsigned long long>(stats.HostReads),
+                 static_cast<unsigned long long>(stats.UnsavedChangedPages));
   }
   CpuProbe::Thread.Active = false;
   if (processResult.Kind == Oot3dNativeGame::NativeA32ProcessRunKind::Terminated) {

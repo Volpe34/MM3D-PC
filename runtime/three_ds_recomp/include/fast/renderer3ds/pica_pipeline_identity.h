@@ -29,7 +29,10 @@ std::vector<uint8_t> BuildPicaPipelineIdentity(
     std::vector<uint8_t> key;
     key.reserve(512);
     const auto word = [&](uint32_t value) {
-        for (unsigned i=0;i<4;++i) key.push_back(static_cast<uint8_t>(value>>(i*8)));
+        // Built for every draw of a game frame: one resize per word, not four push_backs.
+        const size_t at = key.size();
+        key.resize(at + 4U);
+        for (unsigned i=0;i<4;++i) key[at+i] = static_cast<uint8_t>(value>>(i*8));
     };
     const auto source = [&](const auto& identity) {
         for (uint64_t value : identity) { word(uint32_t(value)); word(uint32_t(value>>32)); }

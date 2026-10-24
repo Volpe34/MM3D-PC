@@ -172,6 +172,9 @@ class PicaSceneFrame final {
     PicaSceneFrame& operator=(const PicaSceneFrame&) = delete;
 
     void BeginFrame(uint32_t frameSlot, uint64_t frameId);
+    // On by default: each draw's uniform bytes are hashed into its content
+    // versions (PicaSemanticDrawView). Off leaves them 0 ("not available").
+    void SetUniformContentVersions(bool enabled) noexcept;
     [[nodiscard]] bool SetTemporalSample(NativeFrameTemporalSample sample) noexcept;
     PicaSceneRecordStatus Record(const PicaSceneDrawRecordDesc& desc);
     void Reset();

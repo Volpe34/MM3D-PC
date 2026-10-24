@@ -61,6 +61,33 @@ uint64_t StructuralSignature(const PicaGeometryRequest& request) {
     return hash == 0U ? 1U : hash;
 }
 
+// The fields StructuralSignature hashes, raw (with the stream and attribute
+// counts): equal fields give the signature already stored with an entry, so a
+// cache hit needs no byte-wise hash.
+void StructuralFields(const PicaGeometryRequest& request, std::vector<uint64_t>& fields) {
+    fields.clear();
+    fields.push_back(request.Indexed);
+    fields.push_back(request.IndicesAre16Bit);
+    fields.push_back(request.VertexCount);
+    fields.push_back(request.BuildPackedStreams);
+    fields.push_back(request.VertexStreams.size());
+    for (const auto& stream : request.VertexStreams) {
+        fields.push_back(stream.Binding.Binding);
+        fields.push_back(stream.Binding.ByteStride);
+        fields.push_back(stream.Binding.PerInstance);
+        fields.push_back(stream.Bytes.size());
+    }
+    fields.push_back(request.VertexAttributes.size());
+    for (const auto& attribute : request.VertexAttributes) {
+        fields.push_back(attribute.Location);
+        fields.push_back(attribute.Binding);
+        fields.push_back(static_cast<uint64_t>(attribute.Scalar));
+        fields.push_back(attribute.ComponentCount);
+        fields.push_back(attribute.ByteOffset);
+    }
+    fields.push_back(request.IndexBytes.size());
+}
+
 bool BuildPreparedGeometry(const PicaGeometryRequest& request, uint64_t structuralSignature,
                            PicaPreparedGeometry& prepared) {
     prepared = {};
@@ -140,8 +167,14 @@ struct PicaGeometryRegistry::Impl {
     explicit Impl(size_t capacity) : Capacity(std::max<size_t>(capacity, 1U)) {
     }
 
+    struct Entry {
+        PicaPreparedGeometry Prepared;
+        std::vector<uint64_t> Structure;
+    };
+
     size_t Capacity = 1U;
-    std::unordered_map<uint64_t, PicaPreparedGeometry> Entries;
+    std::unordered_map<uint64_t, Entry> Entries;
+    std::vector<uint64_t> RequestStructure;
     PicaPreparedGeometry Transient;
     std::vector<uint64_t> EvictedIdentities;
     PicaGeometryRegistryStats Statistics;
@@ -153,11 +186,10 @@ PicaGeometryRegistry::PicaGeometryRegistry(size_t capacity) : mImpl(std::make_un
 PicaGeometryRegistry::~PicaGeometryRegistry() = default;
 
 PicaGeometryResolveResult PicaGeometryRegistry::Resolve(const PicaGeometryRequest& request) {
-    const uint64_t structuralSignature = StructuralSignature(request);
     const bool cacheable = request.IdentityAvailable && request.Identity != 0U && request.ContentVersion != 0U;
     if (!cacheable) {
         ++mImpl->Statistics.DynamicBuilds;
-        if (!BuildPreparedGeometry(request, structuralSignature, mImpl->Transient)) {
+        if (!BuildPreparedGeometry(request, StructuralSignature(request), mImpl->Transient)) {
             return {};
         }
         if (request.BuildPackedStreams && !mImpl->Transient.PackedValid) {
@@ -166,15 +198,17 @@ PicaGeometryResolveResult PicaGeometryRegistry::Resolve(const PicaGeometryReques
         return { &mImpl->Transient, false, false };
     }
 
+    StructuralFields(request, mImpl->RequestStructure);
     auto found = mImpl->Entries.find(request.Identity);
-    if (found != mImpl->Entries.end() && found->second.ContentVersion == request.ContentVersion &&
-        found->second.StructuralSignature == structuralSignature) {
-        found->second.LastUsedFrame = request.FrameId;
+    if (found != mImpl->Entries.end() && found->second.Prepared.ContentVersion == request.ContentVersion &&
+        found->second.Structure == mImpl->RequestStructure) {
+        found->second.Prepared.LastUsedFrame = request.FrameId;
         ++mImpl->Statistics.Hits;
         mImpl->Statistics.Entries = mImpl->Entries.size();
-        return { &found->second, true, true };
+        return { &found->second.Prepared, true, true };
     }
 
+    const uint64_t structuralSignature = StructuralSignature(request);
     PicaPreparedGeometry prepared;
     if (!BuildPreparedGeometry(request, structuralSignature, prepared)) {
         return {};
@@ -185,12 +219,12 @@ PicaGeometryResolveResult PicaGeometryRegistry::Resolve(const PicaGeometryReques
     ++mImpl->Statistics.Misses;
     if (found != mImpl->Entries.end()) {
         ++mImpl->Statistics.Updates;
-        found->second = std::move(prepared);
+        found->second = { std::move(prepared), mImpl->RequestStructure };
     } else {
         if (mImpl->Entries.size() >= mImpl->Capacity) {
             const auto oldest =
                 std::min_element(mImpl->Entries.begin(), mImpl->Entries.end(), [](const auto& left, const auto& right) {
-                    return left.second.LastUsedFrame < right.second.LastUsedFrame;
+                    return left.second.Prepared.LastUsedFrame < right.second.Prepared.LastUsedFrame;
                 });
             if (oldest != mImpl->Entries.end()) {
                 mImpl->EvictedIdentities.push_back(oldest->first);
@@ -198,10 +232,11 @@ PicaGeometryResolveResult PicaGeometryRegistry::Resolve(const PicaGeometryReques
                 ++mImpl->Statistics.Evictions;
             }
         }
-        found = mImpl->Entries.emplace(request.Identity, std::move(prepared)).first;
+        found = mImpl->Entries.emplace(request.Identity, Impl::Entry{ std::move(prepared), mImpl->RequestStructure })
+                    .first;
     }
     mImpl->Statistics.Entries = mImpl->Entries.size();
-    return { &found->second, false, true };
+    return { &found->second.Prepared, false, true };
 }
 
 std::vector<uint64_t> PicaGeometryRegistry::TakeEvictedIdentities() {

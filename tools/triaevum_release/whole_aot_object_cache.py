@@ -275,6 +275,9 @@ def _compile_arguments(
         *(() if release_platform.is_mingw(toolchain.platform) else ("-fPIC",)),
         "-fvisibility=hidden",
         "-ffp-model=strict",
+        # Same code on every toolchain: some clang builds turn the stack
+        # protector on by default, a check in nearly every generated function.
+        "-fno-stack-protector",
         "-w",
         "-flto=thin",
         "-DNOMINMAX",

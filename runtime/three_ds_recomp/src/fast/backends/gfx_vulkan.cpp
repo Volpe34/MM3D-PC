@@ -233,6 +233,11 @@ GfxRenderingAPIVulkan::GfxRenderingAPIVulkan(GfxWindowBackendSDL2* windowBackend
               mNriInterop.ForgetTexture(reinterpret_cast<VkImage>(surface.NativeImage));
           mResourceStates.Forget(surface.NativeImage);
       }) {
+    // Nothing in the game reads the per-draw uniform content versions, and
+    // hashing every draw's uniforms each presented frame cost ~1.5% CPU.
+    // TRIAEVUM_UNIFORM_CONTENT_VERSIONS=1 computes them again.
+    mPicaSceneFrame.SetUniformContentVersions(
+        std::getenv("TRIAEVUM_UNIFORM_CONTENT_VERSIONS") != nullptr);
 }
 
 GfxRenderingAPIVulkan::~GfxRenderingAPIVulkan() {
@@ -2556,6 +2561,18 @@ void GfxRenderingAPIVulkan::ReadFramebufferToCPU(int, uint32_t width, uint32_t h
     const bool copied = Renderer::CopyScaledFramebufferRgba5551(
         {rgba8, static_cast<size_t>(byteCount)}, copyWidth, copyHeight, bgra,
         {rgba16Buf, static_cast<size_t>(width) * height}, width, height);
+    // TRIAEVUM_SCREENSHOT_RAW_DIR=<dir>: also each readback's swapchain bytes,
+    // unquantized (screenshots keep 5 bits a channel), for exact A/B checks.
+    if (const char* rawDir = std::getenv("TRIAEVUM_SCREENSHOT_RAW_DIR")) {
+        static uint32_t rawIndex = 0;
+        char name[96];
+        std::snprintf(name, sizeof(name), "/raw_%05u_%ux%u_f%d.rgba", rawIndex++, copyWidth,
+                      copyHeight, static_cast<int>(mSwapchainFormat));
+        if (std::FILE* file = std::fopen((std::string(rawDir) + name).c_str(), "wb")) {
+            std::fwrite(rgba8, 1, static_cast<size_t>(byteCount), file);
+            std::fclose(file);
+        }
+    }
     DestroyBuffer(readback);
     if (!copied) throw std::runtime_error("invalid framebuffer readback extent");
 }

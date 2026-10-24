@@ -45,6 +45,8 @@ struct DisplayEffectPlanInput {
     AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
     UpscalerProvider Upscaler = UpscalerProvider::Nis;
     bool GuideDiagnostics = false;
+
+    bool operator==(const DisplayEffectPlanInput&) const = default;
 };
 
 struct DisplayEffectPlan {
@@ -140,6 +142,12 @@ class DisplayEffectExecutionLedger {
 // Pure per-view policy. Backend code executes the resulting pass flags but no
 // longer re-derives feature dependencies from UI/environment state.
 [[nodiscard]] DisplayEffectPlan BuildDisplayEffectPlan(
+    const DisplayEffectPlanInput& input);
+
+// BuildDisplayEffectPlan is a pure function of its few flags; this keeps one
+// plan per distinct input for the thread (built once, never freed, so the
+// reference stays valid across nested display transfers).
+[[nodiscard]] const DisplayEffectPlan& CachedDisplayEffectPlan(
     const DisplayEffectPlanInput& input);
 
 } // namespace Fast::Oot3d

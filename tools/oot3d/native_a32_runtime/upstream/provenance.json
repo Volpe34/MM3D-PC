@@ -33,9 +33,9 @@
     {
       "path": "recomp/a32_vfp_scalar.cpp",
       "base_sha256": "0792f44f783d4f5fff5563fa8af22ea1e3b24286140976e3fad5770c2e4746a1",
-      "working_sha256": "d07a379cb9e1a72487e5ac50533bbf718f31414fc6960500e4ce9d934b1e94cc",
-      "working_size": 31217,
-      "purpose": "Expose exact binary32 signed-conversion and comparison primitives to statically generated true-AOT regions without raw-op decoding."
+      "working_sha256": "62cb05c7440ee2a78c2ceb2e32cd27c7d878a62147a7c2f7fb4a551b930d0c69",
+      "working_size": 36673,
+      "purpose": "Expose exact binary32 signed-conversion and comparison primitives to statically generated true-AOT regions without raw-op decoding; shift-based rounding and a host fast path proven bit-identical (values and flags) for round-to-nearest normal operands."
     },
     {
       "path": "recomp/a32_vfp_scalar.h",

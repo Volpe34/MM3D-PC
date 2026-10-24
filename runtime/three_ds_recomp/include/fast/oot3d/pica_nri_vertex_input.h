@@ -17,6 +17,12 @@ PicaNriVertexInputLayout BuildPicaNriVertexInputLayout(
     std::span<const PicaNriSourceVertexBinding> bindings,
     std::span<const PicaNriSourceVertexAttribute> attributes);
 
+// The original set-based implementation (any input size); the function above
+// must return the same layout. Kept for large inputs and tests.
+PicaNriVertexInputLayout BuildPicaNriVertexInputLayoutGeneral(
+    std::span<const PicaNriSourceVertexBinding> bindings,
+    std::span<const PicaNriSourceVertexAttribute> attributes);
+
 bool RepackPicaNriVertexBinding(
     const PicaNriSourceVertexBinding& sourceBinding,
     std::span<const PicaNriPackedVertexAttribute> packedAttributes,

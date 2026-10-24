@@ -198,6 +198,9 @@ struct GraphicsSettings {
     float UpscalerSharpness = 0.35F;
     FrameRateMode FrameRate = FrameRateMode::Original30;
     bool VSync = true;
+    // MM3D: the game logic runs ahead on its own thread (same results,
+    // smoother frames); TRIAEVUM_GUEST_THREAD=1/0 overrides it.
+    bool GuestThread = false;
     float FovMultiplier = 1.0F;
     InteractiveGrassSettings Grass;
     InteractiveGrassSettings GrassSavedPreset;

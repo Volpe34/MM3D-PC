@@ -373,7 +373,15 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
     if (!Enabled() || !SelectedDrawFrame(presentationFrame)) {
         return;
     }
-    const auto& identity = plan.CanonicalIdentity;
+    auto identity = plan.CanonicalIdentity;
+    if (identity.DynamicStateId == 0U) {
+        identity.DynamicStateId = BuildOot3dPicaDynamicStateId(
+            submission.Packet, submission.State);
+    }
+    if (identity.FullRegisterStateId == 0U) {
+        identity.FullRegisterStateId =
+            BuildOot3dPicaFullRegisterStateId(submission.Packet);
+    }
     const auto fragmentFeatures = AnalyzeOot3dPicaFragmentFeatures(
         submission.Packet, plan.State);
     const std::string_view vertexSource =

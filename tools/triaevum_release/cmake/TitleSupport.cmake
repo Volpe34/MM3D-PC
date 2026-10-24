@@ -18,6 +18,10 @@ function(triaevum_add_title_support root pinned)
         VISIBILITY_INLINES_HIDDEN ON)
     if(MSVC)
         target_compile_options(triaevum_title_whole_aot_support PRIVATE /EHsc)
+    else()
+        # Like the generated code: no stack canary in every guest float and
+        # memory helper (some toolchains turn it on by default).
+        target_compile_options(triaevum_title_whole_aot_support PRIVATE -fno-stack-protector)
     endif()
     if(WIN32)
         target_compile_definitions(triaevum_title_whole_aot_support PRIVATE NOMINMAX)

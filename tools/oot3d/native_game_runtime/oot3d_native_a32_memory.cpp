@@ -1,7 +1,11 @@
 #include "oot3d_native_a32_memory.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <deque>
 #include <limits>
+#include <mutex>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +31,20 @@ bool IsSupportedSize(uint8_t size) {
 }
 
 } // namespace
+
+struct NativeA32Memory::HostSnapshot {
+    std::thread::id GuestThread;
+    std::function<void()> HostWriteBarrier;
+    // Guards Pages, ReadCopies and the region table while the step runs.
+    std::mutex Lock;
+    // Page index -> the page's bytes before the step's first write to it.
+    std::unordered_map<uint32_t, std::unique_ptr<uint8_t[]>> Pages;
+    // Fast write pointers cleared so a first write takes WriteSized.
+    std::vector<std::pair<FastPage*, uint8_t*>> ClearedWrites;
+    std::deque<std::vector<uint8_t>> ReadCopies;
+    std::vector<std::vector<uint8_t>> VerifyRegions;
+    bool Verify = false;
+};
 
 NativeA32Memory::NativeA32Memory(const NativeA32Memory& other)
     : mRegions(other.mRegions), mWriteGeneration(other.mWriteGeneration),
@@ -86,6 +104,13 @@ bool NativeA32Memory::MapRegion(const NativeA32MemoryRegionConfig& config,
         }
     }
 
+    std::unique_lock<std::mutex> snapshotLock;
+    if (mHostSnapshotActive) {
+        RequireHostAccess();
+    }
+    if (mHostSnapshotActive) {
+        snapshotLock = std::unique_lock(mHostSnapshot->Lock);
+    }
     Region region;
     region.Name = config.Name;
     region.BaseAddress = config.BaseAddress;
@@ -100,6 +125,23 @@ bool NativeA32Memory::MapRegion(const NativeA32MemoryRegionConfig& config,
                   return left.BaseAddress < right.BaseAddress;
               });
     RebuildPageTable();
+    if (mHostSnapshotActive) {
+        auto& snapshot = *mHostSnapshot;
+        snapshot.ClearedWrites.clear();
+        for (size_t group = 0; group < FastGroupCount; ++group) {
+            if (mFastPageGroups[group] == nullptr) continue;
+            for (size_t page = 0; page < FastGroupPageCount; ++page) {
+                auto& fastPage = mFastPageGroups[group][page];
+                if (fastPage.Write != nullptr &&
+                    !snapshot.Pages.contains(static_cast<uint32_t>(
+                        group * FastGroupPageCount + page))) {
+                    snapshot.ClearedWrites.emplace_back(&fastPage,
+                                                        fastPage.Write);
+                    fastPage.Write = nullptr;
+                }
+            }
+        }
+    }
     return true;
 }
 
@@ -196,12 +238,190 @@ const NativeA32Memory::Region* NativeA32Memory::FindRegion(
 }
 
 bool NativeA32Memory::IsMapped(uint32_t address, size_t size) const {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        std::lock_guard lock(mHostSnapshot->Lock);
+        return FindRegion(address, size) != nullptr;
+    }
     return FindRegion(address, size) != nullptr;
 }
 
 bool NativeA32Memory::IsWritable(uint32_t address, size_t size) const {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        std::lock_guard lock(mHostSnapshot->Lock);
+        const auto* region = FindRegion(address, size);
+        return region != nullptr && region->Writable;
+    }
     const auto* region = FindRegion(address, size);
     return region != nullptr && region->Writable;
+}
+
+void NativeA32Memory::BeginHostSnapshot(
+    std::thread::id guestThread, std::function<void()> hostWriteBarrier,
+    bool verify) {
+    if (mHostSnapshot == nullptr) {
+        mHostSnapshot = std::make_shared<HostSnapshot>();
+    }
+    auto& snapshot = *mHostSnapshot;
+    snapshot.GuestThread = guestThread;
+    snapshot.HostWriteBarrier = std::move(hostWriteBarrier);
+    snapshot.Pages.clear();
+    snapshot.ClearedWrites.clear();
+    snapshot.ReadCopies.clear();
+    snapshot.Verify = verify;
+    snapshot.VerifyRegions.clear();
+    for (size_t group = 0; group < FastGroupCount; ++group) {
+        if (mFastPageGroups[group] == nullptr) continue;
+        for (size_t page = 0; page < FastGroupPageCount; ++page) {
+            auto& fastPage = mFastPageGroups[group][page];
+            if (fastPage.Write != nullptr) {
+                snapshot.ClearedWrites.emplace_back(&fastPage, fastPage.Write);
+                fastPage.Write = nullptr;
+            }
+        }
+    }
+    if (verify) {
+        for (const auto& region : mRegions) {
+            snapshot.VerifyRegions.push_back(region.Writable
+                                                 ? region.Bytes
+                                                 : std::vector<uint8_t>{});
+        }
+    }
+    ++mHostSnapshotStats.Steps;
+    mHostSnapshotActive = true;
+}
+
+void NativeA32Memory::EndHostSnapshot() {
+    if (!mHostSnapshotActive) {
+        return;
+    }
+    auto& snapshot = *mHostSnapshot;
+    for (const auto& [fastPage, write] : snapshot.ClearedWrites) {
+        if (fastPage->Write == nullptr) {
+            fastPage->Write = write;
+        }
+    }
+    mHostSnapshotStats.SavedPages += snapshot.Pages.size();
+    if (snapshot.Verify && snapshot.VerifyRegions.size() == mRegions.size()) {
+        for (size_t index = 0; index < mRegions.size(); ++index) {
+            const auto& before = snapshot.VerifyRegions[index];
+            const auto& region = mRegions[index];
+            if (before.size() != region.Bytes.size()) continue;
+            for (size_t offset = 0; offset < before.size(); offset += PageSize) {
+                const size_t count = std::min(PageSize, before.size() - offset);
+                if (std::equal(before.begin() + offset,
+                               before.begin() + offset + count,
+                               region.Bytes.begin() + offset)) {
+                    continue;
+                }
+                const uint32_t address =
+                    region.BaseAddress + static_cast<uint32_t>(offset);
+                const uint32_t first = address >> PageShift;
+                const uint32_t last = static_cast<uint32_t>(
+                    (uint64_t{address} + count - 1U) >> PageShift);
+                bool saved = true;
+                for (uint32_t page = first; page <= last; ++page) {
+                    saved = saved && snapshot.Pages.contains(page);
+                }
+                if (!saved && mHostSnapshotStats.UnsavedChangedPages++ < 16U) {
+                    std::fprintf(stderr,
+                                 "[guest-thread] page %08X changed without "
+                                 "a saved copy\n",
+                                 address);
+                }
+            }
+        }
+    }
+    snapshot.Pages.clear();
+    snapshot.ClearedWrites.clear();
+    snapshot.ReadCopies.clear();
+    snapshot.VerifyRegions.clear();
+    snapshot.HostWriteBarrier = nullptr;
+    mHostSnapshotActive = false;
+}
+
+void NativeA32Memory::RequireHostAccess() {
+    if (mHostSnapshotActive && OnHostThread()) {
+        ++mHostSnapshotStats.HostWriteBarriers;
+        auto barrier = mHostSnapshot->HostWriteBarrier;
+        barrier();
+    }
+}
+
+bool NativeA32Memory::OnHostThread() const noexcept {
+    return std::this_thread::get_id() != mHostSnapshot->GuestThread;
+}
+
+bool NativeA32Memory::HostSnapshotRead(uint32_t address,
+                                       std::span<uint8_t> bytes) const {
+    auto& snapshot = *mHostSnapshot;
+    std::lock_guard lock(snapshot.Lock);
+    const auto* region = FindRegion(address, bytes.size());
+    if (region == nullptr) {
+        return false;
+    }
+    ++const_cast<HostSnapshotStats&>(mHostSnapshotStats).HostReads;
+    size_t done = 0;
+    while (done < bytes.size()) {
+        const uint32_t current = address + static_cast<uint32_t>(done);
+        const uint32_t page = current >> PageShift;
+        const size_t pageOffset = current & PageMask;
+        const size_t count = std::min(bytes.size() - done, PageSize - pageOffset);
+        const auto saved = snapshot.Pages.find(page);
+        const uint8_t* source =
+            saved != snapshot.Pages.end()
+                ? saved->second.get() + pageOffset
+                : region->Bytes.data() + (current - region->BaseAddress);
+        std::copy_n(source, count, bytes.begin() + static_cast<std::ptrdiff_t>(done));
+        done += count;
+    }
+    return true;
+}
+
+void NativeA32Memory::PrepareWrite(uint32_t address, size_t size) {
+    if (!mHostSnapshotActive || size == 0) {
+        return;
+    }
+    if (OnHostThread()) {
+        RequireHostAccess();
+        return;
+    }
+    auto& snapshot = *mHostSnapshot;
+    const uint32_t first = address >> PageShift;
+    const uint32_t last =
+        static_cast<uint32_t>((uint64_t{address} + size - 1U) >> PageShift);
+    for (uint32_t page = first; page <= last; ++page) {
+        if (snapshot.Pages.contains(page)) {
+            continue;
+        }
+        auto bytes = std::make_unique<uint8_t[]>(PageSize);
+        const uint64_t pageAddress = uint64_t{page} << PageShift;
+        for (const auto& region : mRegions) {
+            const uint64_t begin = std::max<uint64_t>(pageAddress, region.BaseAddress);
+            const uint64_t end = std::min<uint64_t>(
+                pageAddress + PageSize,
+                uint64_t{region.BaseAddress} + region.Bytes.size());
+            if (begin < end) {
+                std::copy_n(region.Bytes.data() + (begin - region.BaseAddress),
+                            end - begin, bytes.get() + (begin - pageAddress));
+            }
+        }
+        {
+            std::lock_guard lock(snapshot.Lock);
+            snapshot.Pages.emplace(page, std::move(bytes));
+        }
+        auto& group = mFastPageGroups[page / FastGroupPageCount];
+        if (group != nullptr) {
+            auto& fastPage = group[page & FastGroupPageMask];
+            if (fastPage.Write == nullptr) {
+                const auto* region =
+                    FindRegion(static_cast<uint32_t>(pageAddress), PageSize);
+                if (region != nullptr && region->Writable) {
+                    fastPage.Write = const_cast<uint8_t*>(region->Bytes.data()) +
+                                     (pageAddress - region->BaseAddress);
+                }
+            }
+        }
+    }
 }
 
 bool NativeA32Memory::IsExecutable(uint32_t address, size_t size) const {
@@ -411,6 +631,9 @@ bool NativeA32Memory::ReadBytes(uint32_t address,
     if (bytes.empty()) {
         return true;
     }
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        return HostSnapshotRead(address, bytes);
+    }
     const auto* region = FindRegion(address, bytes.size());
     if (region == nullptr) {
         return false;
@@ -423,6 +646,15 @@ bool NativeA32Memory::ReadBytes(uint32_t address,
 
 const uint8_t* NativeA32Memory::GetReadPointer(uint32_t address,
                                                size_t size) const {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        // A copy as of the step's start, kept until the step ends.
+        std::vector<uint8_t> copy(std::max<size_t>(size, 1U));
+        if (!HostSnapshotRead(address, std::span(copy).first(size))) {
+            return nullptr;
+        }
+        std::lock_guard lock(mHostSnapshot->Lock);
+        return mHostSnapshot->ReadCopies.emplace_back(std::move(copy)).data();
+    }
     const auto* region = FindRegion(address, size);
     if (region == nullptr) {
         return nullptr;
@@ -432,6 +664,10 @@ const uint8_t* NativeA32Memory::GetReadPointer(uint32_t address,
 }
 
 uint8_t* NativeA32Memory::GetWritePointer(uint32_t address, size_t size) {
+    if (mHostSnapshotActive) [[unlikely]] {
+        if (!IsWritable(address, size)) return nullptr;
+        PrepareWrite(address, size);
+    }
     auto* region = FindRegion(address, size);
     if (region == nullptr || !region->Writable) {
         return nullptr;
@@ -480,6 +716,9 @@ bool NativeA32Memory::WriteBytes(uint32_t address,
     if (bytes.empty()) {
         return true;
     }
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, bytes.size());
+    }
     auto* region = FindRegion(address, bytes.size());
     if (region == nullptr || !region->Writable) {
         return false;
@@ -499,6 +738,9 @@ bool NativeA32Memory::WriteHostBytes(
     if (bytes.empty()) {
         return true;
     }
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, bytes.size());
+    }
     auto* region = FindRegion(address, bytes.size());
     if (region == nullptr) {
         return false;
@@ -516,6 +758,9 @@ bool NativeA32Memory::WriteHostBytes(
 bool NativeA32Memory::Fill(uint32_t address, size_t size, uint8_t value) {
     if (size == 0) {
         return true;
+    }
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, size);
     }
     auto* region = FindRegion(address, size);
     if (region == nullptr || !region->Writable) {
@@ -542,6 +787,21 @@ bool NativeA32Memory::ReadSized(uint32_t address, uint8_t size,
         }
         return false;
     }
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        std::array<uint8_t, 8> bytes{};
+        if (!HostSnapshotRead(address, std::span(bytes).first(size))) {
+            if (faultAddress != nullptr) {
+                *faultAddress = address;
+            }
+            return false;
+        }
+        uint64_t decoded = 0;
+        for (uint8_t index = 0; index < size; ++index) {
+            decoded |= static_cast<uint64_t>(bytes[index]) << (index * 8U);
+        }
+        *value = decoded;
+        return true;
+    }
     const auto* region = FindRegion(address, size);
     if (region == nullptr) {
         if (faultAddress != nullptr) {
@@ -567,6 +827,15 @@ bool NativeA32Memory::WriteSized(uint32_t address, uint8_t size,
         }
         return false;
     }
+    if (mHostSnapshotActive) [[unlikely]] {
+        if (!IsWritable(address, size)) {
+            if (faultAddress != nullptr) {
+                *faultAddress = address;
+            }
+            return false;
+        }
+        PrepareWrite(address, size);
+    }
     auto* region = FindRegion(address, size);
     if (region == nullptr || !region->Writable) {
         if (faultAddress != nullptr) {
@@ -589,36 +858,69 @@ bool NativeA32Memory::WriteSized(uint32_t address, uint8_t size,
 }
 
 bool NativeA32Memory::Read8(uint32_t address, uint8_t* value) {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        uint64_t decoded = 0;
+        if (value == nullptr || !ReadSized(address, sizeof(uint8_t), &decoded, nullptr)) return false;
+        *value = static_cast<uint8_t>(decoded);
+        return true;
+    }
     return ReadFast(address, value);
 }
 
 bool NativeA32Memory::Read16(uint32_t address, uint16_t* value) {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        uint64_t decoded = 0;
+        if (value == nullptr || !ReadSized(address, sizeof(uint16_t), &decoded, nullptr)) return false;
+        *value = static_cast<uint16_t>(decoded);
+        return true;
+    }
     return ReadFast(address, value);
 }
 
 bool NativeA32Memory::Read32(uint32_t address, uint32_t* value) {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        uint64_t decoded = 0;
+        if (value == nullptr || !ReadSized(address, sizeof(uint32_t), &decoded, nullptr)) return false;
+        *value = static_cast<uint32_t>(decoded);
+        return true;
+    }
     return ReadFast(address, value);
 }
 
 bool NativeA32Memory::Read64(uint32_t address, uint64_t* value,
                              uint32_t* faultAddress) {
+    if (mHostSnapshotActive && OnHostThread()) [[unlikely]] {
+        return value != nullptr && ReadSized(address, 8U, value, faultAddress);
+    }
     return ReadFast(address, value, faultAddress);
 }
 
 bool NativeA32Memory::Write8(uint32_t address, uint8_t value) {
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, sizeof(uint8_t));
+    }
     return WriteFast(address, value);
 }
 
 bool NativeA32Memory::Write16(uint32_t address, uint16_t value) {
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, sizeof(uint16_t));
+    }
     return WriteFast(address, value);
 }
 
 bool NativeA32Memory::Write32(uint32_t address, uint32_t value) {
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, sizeof(uint32_t));
+    }
     return WriteFast(address, value);
 }
 
 bool NativeA32Memory::Write64(uint32_t address, uint64_t value,
                              uint32_t* faultAddress) {
+    if (mHostSnapshotActive) [[unlikely]] {
+        PrepareWrite(address, 8U);
+    }
     return WriteFast(address, value, faultAddress);
 }
 

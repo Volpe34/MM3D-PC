@@ -530,6 +530,8 @@ NativeA32ProcessRunResult NativeA32Process::ApplyHostResult(
 
 NativeA32ProcessRunResult NativeA32Process::Run(
     uint32_t blockLimitPerDispatch, uint32_t maxHostTransitions) {
+    // TRIAEVUM_GUEST_THREAD: a run from the host thread waits for the step.
+    mMemory.RequireHostAccess();
     CpuPhaseProbe::Scope cpuRun(CpuPhaseProbe::Phase::GuestScheduler);
     if (mTimingEnabled) {
         ++mTimingStats.ProcessRunCalls;
@@ -702,6 +704,7 @@ bool NativeA32Process::InvokeFunctionWithResult(
     uint32_t entryAddress, std::span<const uint32_t> arguments,
     uint32_t returnAddress, uint32_t* returnValue, std::string* error,
     uint32_t blockLimitPerDispatch, uint32_t maxHostTransitions) {
+    mMemory.RequireHostAccess();
     if (arguments.size() > 4U) {
         SetError(error, "native A32 function accepts at most four arguments");
         return false;
@@ -725,6 +728,7 @@ bool NativeA32Process::InvokeFunctionWithState(
     uint32_t entryAddress, oot3d::recomp::a32::GuestState& state,
     uint32_t returnAddress, std::string* error,
     uint32_t blockLimitPerDispatch, uint32_t maxHostTransitions) {
+    mMemory.RequireHostAccess();
     if (!mMemory.IsExecutable(entryAddress, 1U)) {
         SetError(error, "native A32 function entry is not executable");
         return false;
@@ -836,6 +840,7 @@ bool NativeA32Process::InvokeFunctionWithState(
 bool NativeA32Process::InvokeSvcWithState(
     uint32_t immediate, oot3d::recomp::a32::GuestState& state,
     std::string* error) {
+    mMemory.RequireHostAccess();
     NativeA32HostContext context{*this, mCurrentThreadId};
     const auto svcStart =
         mTimingEnabled ? TimingClock::now() : TimingClock::time_point{};
@@ -971,6 +976,7 @@ uint64_t NativeA32Process::StateFingerprint() const noexcept {
 }
 
 nlohmann::json NativeA32Process::CaptureState() const {
+    const_cast<NativeA32Memory&>(mMemory).RequireHostAccess();
     nlohmann::json secondaryThreads = nlohmann::json::array();
     for (const auto& thread : mSecondaryThreads) {
         secondaryThreads.push_back({
@@ -1018,6 +1024,7 @@ nlohmann::json NativeA32Process::CaptureState() const {
 
 bool NativeA32Process::RestoreState(const nlohmann::json& state,
                                     std::string* error) {
+    mMemory.RequireHostAccess();
     try {
         if (!state.is_object() ||
             state.value("format", std::string{}) !=

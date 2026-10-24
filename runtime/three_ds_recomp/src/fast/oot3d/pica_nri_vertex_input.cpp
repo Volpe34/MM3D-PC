@@ -54,6 +54,93 @@ void SetError(std::string* error, std::string message) {
 PicaNriVertexInputLayout BuildPicaNriVertexInputLayout(
     std::span<const PicaNriSourceVertexBinding> bindings,
     std::span<const PicaNriSourceVertexAttribute> attributes) {
+    // Runs for every draw of every presented frame: PICA layouts have at most
+    // 12 attributes, so the small-layout path below checks duplicates and
+    // groups attributes on the stack. Larger inputs keep the general path.
+    constexpr size_t kSmallLayout = 16U;
+    if (bindings.size() > kSmallLayout || attributes.size() > kSmallLayout)
+        return BuildPicaNriVertexInputLayoutGeneral(bindings, attributes);
+
+    PicaNriVertexInputLayout result;
+    for (size_t index = 0; index < bindings.size(); ++index) {
+        bool duplicate = false;
+        for (size_t earlier = 0; earlier < index; ++earlier)
+            duplicate |= bindings[earlier].Binding == bindings[index].Binding;
+        if (bindings[index].ByteStride == 0U || duplicate) {
+            result.Error = "invalid or duplicate PICA vertex binding";
+            return result;
+        }
+    }
+
+    result.Attributes.reserve(attributes.size());
+    for (size_t index = 0; index < attributes.size(); ++index) {
+        const auto& attribute = attributes[index];
+        const auto binding = std::find_if(
+            bindings.begin(), bindings.end(),
+            [&](const auto& candidate) {
+                return candidate.Binding == attribute.Binding;
+            });
+        const uint32_t scalarSize = ScalarSize(attribute.Scalar);
+        bool duplicateLocation = false;
+        for (size_t earlier = 0; earlier < index; ++earlier)
+            duplicateLocation |=
+                attributes[earlier].Location == attribute.Location;
+        if (binding == bindings.end() || attribute.ComponentCount == 0U ||
+            attribute.ComponentCount > 4U || scalarSize == 0U ||
+            attribute.ByteOffset +
+                    scalarSize * attribute.ComponentCount >
+                binding->ByteStride ||
+            duplicateLocation) {
+            result.Error = "invalid PICA vertex attribute";
+            return result;
+        }
+    }
+
+    result.Bindings.reserve(bindings.size());
+    for (const auto& binding : bindings) {
+        // This binding's attributes ordered by location (locations are
+        // unique, so the order is the same as the general path's sort).
+        std::array<uint8_t, kSmallLayout> local{};
+        size_t localCount = 0;
+        for (size_t index = 0; index < attributes.size(); ++index) {
+            if (attributes[index].Binding != binding.Binding)
+                continue;
+            size_t position = localCount++;
+            while (position > 0U &&
+                   attributes[local[position - 1U]].Location >
+                       attributes[index].Location) {
+                local[position] = local[position - 1U];
+                --position;
+            }
+            local[position] = static_cast<uint8_t>(index);
+        }
+        if (localCount == 0U)
+            continue;
+        const uint32_t packedStride =
+            static_cast<uint32_t>(localCount) * 4U * sizeof(float);
+        result.Bindings.push_back(
+            {binding.Binding, packedStride, binding.PerInstance});
+        for (size_t slot = 0; slot < localCount; ++slot) {
+            const auto& attribute = attributes[local[slot]];
+            result.Attributes.push_back(
+                {attribute.Location, attribute.Binding,
+                 static_cast<uint32_t>(slot) * 4U *
+                     static_cast<uint32_t>(sizeof(float)),
+                 attribute.Scalar, attribute.ComponentCount,
+                 attribute.ByteOffset});
+        }
+    }
+    if (result.Attributes.size() != attributes.size()) {
+        result.Error = "PICA vertex layout lost an attribute";
+        result.Bindings.clear();
+        result.Attributes.clear();
+    }
+    return result;
+}
+
+PicaNriVertexInputLayout BuildPicaNriVertexInputLayoutGeneral(
+    std::span<const PicaNriSourceVertexBinding> bindings,
+    std::span<const PicaNriSourceVertexAttribute> attributes) {
     PicaNriVertexInputLayout result;
     std::set<uint32_t> bindingIds;
     for (const auto& binding : bindings) {

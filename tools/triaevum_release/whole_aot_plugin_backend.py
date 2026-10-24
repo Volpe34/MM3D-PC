@@ -426,6 +426,7 @@ def build_whole_aot_plugin(
                     "-fPIC",
                     "-fvisibility=hidden",
                     "-ffp-model=strict",
+                    "-fno-stack-protector",
                     "-w",
                     "-DNOMINMAX",
                     "-DOOT3D_NATIVE_GENERATED_WHOLE_AOT=1",

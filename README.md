@@ -35,6 +35,10 @@ pull requests are welcome.
 - **Frame interpolation** from the 30 Hz game to 60 fps or higher. It covers
   the camera, the world, characters and shadows; the interface is shown
   exactly as the game draws it.
+- **Game logic on its own thread (experimental):** **F1 → Renderer →
+  Display**. The game's logic runs ahead on another CPU core: same game,
+  fewer frame-time spikes (most visible with VSync off). Off by default; it
+  applies at once.
 - **Single screen.** The touch-screen HUD and menus are rearranged onto one
   screen and usable with a controller: items, masks, map, Bombers' Notebook,
   ocarina songs, bank, giving items.

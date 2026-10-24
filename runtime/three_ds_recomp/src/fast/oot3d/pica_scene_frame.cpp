@@ -1,6 +1,7 @@
 #include "fast/oot3d/pica_scene_frame.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <memory>
 #include <unordered_map>
@@ -99,6 +100,7 @@ struct PicaSceneFrame::Impl {
         ::Fast::Renderer3ds::PicaShaderSourceIdentity SourceIdentity;
     };
     bool FrameActive = false;
+    bool UniformContentVersions = true;
     uint32_t CurrentFrameSlot = 0;
     uint64_t CurrentFrameId = 0;
     NativeFrameTemporalSample TemporalSample;
@@ -110,6 +112,10 @@ struct PicaSceneFrame::Impl {
                        ShaderIdentityHash>
         Shaders;
     std::unordered_map<uint64_t, std::vector<std::unique_ptr<PicaSceneVertexLayout>>> VertexLayouts;
+    // Layouts the last draws resolved to. The catalog keeps one layout per
+    // distinct content, so a match here is what the full lookup returns.
+    std::array<const PicaSceneVertexLayout*, 4> RecentVertexLayouts{};
+    size_t NextRecentVertexLayout = 0;
     uint32_t DirectionalShadowCasters = 0;
     uint32_t DirectionalShadowNativeLightCasters = 0;
     uint32_t NativeLightingStates = 0;
@@ -185,6 +191,12 @@ struct PicaSceneFrame::Impl {
     const PicaSceneVertexLayout* ResolveVertexLayout(
         std::span<const PicaNriPackedVertexBinding> bindings,
         std::span<const PicaNriPackedVertexAttribute> attributes) {
+        for (const auto* recent : RecentVertexLayouts) {
+            if (recent != nullptr &&
+                SameVertexLayout(*recent, bindings, attributes)) {
+                return recent;
+            }
+        }
         const uint64_t key = HashVertexLayout(bindings, attributes);
         auto& bucket = VertexLayouts[key];
         const auto found = std::find_if(
@@ -193,6 +205,7 @@ struct PicaSceneFrame::Impl {
                 return SameVertexLayout(*layout, bindings, attributes);
             });
         if (found != bucket.end()) {
+            RememberVertexLayout(found->get());
             return found->get();
         }
         auto layout = std::make_unique<PicaSceneVertexLayout>();
@@ -202,7 +215,14 @@ struct PicaSceneFrame::Impl {
         const auto* result = layout.get();
         bucket.push_back(std::move(layout));
         ++VertexLayoutCount;
+        RememberVertexLayout(result);
         return result;
+    }
+
+    void RememberVertexLayout(const PicaSceneVertexLayout* layout) noexcept {
+        RecentVertexLayouts[NextRecentVertexLayout] = layout;
+        NextRecentVertexLayout =
+            (NextRecentVertexLayout + 1U) % RecentVertexLayouts.size();
     }
 };
 
@@ -233,6 +253,10 @@ void PicaSceneFrame::BeginFrame(uint32_t frameSlot, uint64_t frameId) {
     mImpl->BoundTextures = 0;
     mImpl->CanonicalPipelines.clear();
     mImpl->CanonicalFullRegisterStates.clear();
+}
+
+void PicaSceneFrame::SetUniformContentVersions(bool enabled) noexcept {
+    mImpl->UniformContentVersions = enabled;
 }
 
 bool PicaSceneFrame::SetTemporalSample(NativeFrameTemporalSample sample) noexcept {
@@ -380,17 +404,18 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
     record.UniformBuffer = desc.UniformBuffer;
     record.VertexUniformOffset = desc.VertexUniformOffset;
     record.VertexUniformSize = desc.VertexUniformSize;
+    const bool versions = mImpl->UniformContentVersions;
     record.VertexUniformContentVersion =
-        HashPicaUniformBytes(desc.PackedVertexUniforms);
+        versions ? HashPicaUniformBytes(desc.PackedVertexUniforms) : 0U;
     record.PreviousVertexUniformOffset = desc.PreviousVertexUniformOffset;
     record.PreviousVertexUniformSize = desc.PreviousVertexUniformHistoryAvailable ? desc.PreviousVertexUniformSize : 0U;
     record.PreviousVertexUniformContentVersion =
-        desc.PreviousVertexUniformHistoryAvailable ? HashPicaUniformBytes(desc.PackedPreviousVertexUniforms) : 0U;
+        versions && desc.PreviousVertexUniformHistoryAvailable ? HashPicaUniformBytes(desc.PackedPreviousVertexUniforms) : 0U;
     record.PreviousVertexUniformHistoryAvailable = desc.PreviousVertexUniformHistoryAvailable;
     record.FragmentUniformOffset = desc.FragmentUniformOffset;
     record.FragmentUniformSize = desc.FragmentUniformSize;
     record.FragmentUniformContentVersion =
-        HashPicaUniformBytes(desc.PackedFragmentUniforms);
+        versions ? HashPicaUniformBytes(desc.PackedFragmentUniforms) : 0U;
     record.GeometryBuffer = desc.GeometryBuffer;
     record.FirstVertexBinding =
         static_cast<uint32_t>(mImpl->DrawVertexBindings.size());
@@ -489,6 +514,7 @@ void PicaSceneFrame::Reset() {
     mImpl->DirectionalShadowCasterFlags.clear();
     mImpl->Shaders.clear();
     mImpl->VertexLayouts.clear();
+    mImpl->RecentVertexLayouts = {};
     mImpl->DirectionalShadowCasters = 0;
     mImpl->DirectionalShadowNativeLightCasters = 0;
     mImpl->NativeLightingStates = 0;

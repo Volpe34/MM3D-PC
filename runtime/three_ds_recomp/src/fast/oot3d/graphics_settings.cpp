@@ -173,6 +173,7 @@ GraphicsSettings GraphicsSettingsService::PresetForCurrent(
     value.OutputHeight = current.OutputHeight;
     value.RefreshRate = current.RefreshRate;
     value.VSync = current.VSync;
+    value.GuestThread = current.GuestThread;
     value.FovMultiplier = current.FovMultiplier;
     value.TexturePacks = current.TexturePacks;
     value.Grass.Rules = current.Grass.Rules;

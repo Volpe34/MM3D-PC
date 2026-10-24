@@ -6,6 +6,7 @@
 
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <string_view>
@@ -498,6 +499,25 @@ uint64_t BuildOot3dPicaCanonicalVertexProgramId(
     return BuildVertexProgramIdImpl(packet, state);
 }
 
+uint64_t BuildOot3dPicaFullRegisterStateId(const Oot3dPicaDrawPacket& packet) {
+    return BuildFullRegisterStateId(packet);
+}
+
+uint64_t BuildOot3dPicaDynamicStateId(const Oot3dPicaDrawPacket& packet,
+                                      const Oot3dPicaDecodedDrawState& state) {
+    return BuildDynamicStateId(packet, state);
+}
+
+bool Oot3dPicaDiagnosticDrawIdsEnabled() noexcept {
+    // Every draw's register file, uniforms and fog table hashed byte by byte
+    // took ~2.5% of the main thread; only diagnostics read these IDs (the
+    // semantic trace hashes them itself).
+    static const bool enabled =
+        std::getenv("OOT3D_VULKAN_DIAGNOSTICS_PATH") != nullptr ||
+        std::getenv("TRIAEVUM_DIAGNOSTIC_DRAW_IDS") != nullptr;
+    return enabled;
+}
+
 Oot3dPicaCanonicalDrawIdentity BuildOot3dPicaCanonicalDrawIdentity(
     const Oot3dPicaDrawPacket& packet,
     const Oot3dPicaDecodedDrawState& state,
@@ -511,8 +531,12 @@ Oot3dPicaCanonicalDrawIdentity BuildOot3dPicaCanonicalDrawIdentity(
         fragmentProgramId,
         rasterStateId,
         BuildPipelineId(vertexProgramId, fragmentProgramId, rasterStateId),
-        BuildDynamicStateId(packet, state),
-        BuildFullRegisterStateId(packet),
+        Oot3dPicaDiagnosticDrawIdsEnabled()
+            ? BuildDynamicStateId(packet, state)
+            : 0U,
+        Oot3dPicaDiagnosticDrawIdsEnabled()
+            ? BuildFullRegisterStateId(packet)
+            : 0U,
     };
 }
 

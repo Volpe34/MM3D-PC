@@ -1179,7 +1179,8 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
         {"FrameRate",
          {{"Mode", EnumName(settings.FrameRate,
                             kFrameRateNames)}}},
-        {"Presentation", {{"VSync", settings.VSync}}},
+        {"Presentation",
+         {{"VSync", settings.VSync}, {"GuestThread", settings.GuestThread}}},
         {"Camera", {{"FovMultiplier", settings.FovMultiplier}}},
         {"TexturePacks",
          {
@@ -1407,6 +1408,11 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                           "Graphics.Presentation", result)) {
         ReadScalar(*presentation, "VSync", result.Value.VSync,
                    "Graphics.Presentation.VSync", result);
+        // Optional (configs from before v0.1.9 have no value: off).
+        if (FindMember(*presentation, "GuestThread") != nullptr) {
+            ReadScalar(*presentation, "GuestThread", result.Value.GuestThread,
+                       "Graphics.Presentation.GuestThread", result);
+        }
     }
     if (const Json* camera =
             RequireObject(document, "Camera", "Graphics.Camera",

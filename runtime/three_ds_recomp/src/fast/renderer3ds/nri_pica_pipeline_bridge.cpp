@@ -246,10 +246,21 @@ struct NriPicaPipelineBridge::Impl {
     std::string Reason = "NRI PICA pipeline bridge is not initialized";
 #ifdef ENABLE_RENDERER3DS_NRI
     std::unordered_map<VkPipeline, nri::Pipeline*> Pipelines;
-    std::map<NriPicaPipelineId, std::shared_ptr<nri::Pipeline>> OwnedPipelines;
+    struct OwnedPipeline {
+        std::shared_ptr<nri::Pipeline> Pipeline;
+        bool UsesBlendConstants = false;
+    };
+    struct PipelineIdHash {
+        size_t operator()(NriPicaPipelineId id) const noexcept {
+            return std::hash<uint64_t>{}(id.Value);
+        }
+    };
+    // Looked up several times for every draw: hashed, with the blend flag in
+    // the same entry (a tree of thousands of pipelines cost ~1.5% CPU).
+    std::unordered_map<NriPicaPipelineId, OwnedPipeline, PipelineIdHash>
+        OwnedPipelines;
     PicaDevicePipelinePool<nri::Pipeline> OwnedPipelineObjects;
     NriPicaPipelineIdentity OwnedPipelineIdentity;
-    std::map<NriPicaPipelineId, bool> OwnedPipelineUsesBlendConstants;
     nri::PipelineLayout* DescriptorLayout = nullptr;
     nri::PipelineCache* PipelineCache = nullptr;
     bool PipelineCacheAttempted = false;
@@ -637,7 +648,6 @@ bool NriPicaPipelineBridge::CreateOwnedPipeline(
             });
         mImpl->OwnedPipelineObjects.Retain(std::move(key), owned);
     }
-    mImpl->OwnedPipelines.emplace(pipelineId, std::move(owned));
     const bool usesBlendConstants = std::any_of(
         desc.Colors.begin(), desc.Colors.end(),
         [](const VkPipelineColorBlendAttachmentState& color) {
@@ -650,8 +660,8 @@ bool NriPicaPipelineBridge::CreateOwnedPipeline(
                    ReferencesBlendConstants(
                        color.dstAlphaBlendFactor);
         });
-    mImpl->OwnedPipelineUsesBlendConstants.emplace(
-        pipelineId, usesBlendConstants);
+    mImpl->OwnedPipelines.emplace(
+        pipelineId, Impl::OwnedPipeline{std::move(owned), usesBlendConstants});
     return true;
 #endif
 }
@@ -1012,7 +1022,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
     core->CmdSetPipelineLayout(
         *command, nri::BindPoint::GRAPHICS,
         *mImpl->DescriptorLayout);
-    core->CmdSetPipeline(*command, *pipeline->second);
+    core->CmdSetPipeline(*command, *pipeline->second.Pipeline);
     const nri::SetDescriptorSetDesc setDesc{
         0, set, nri::BindPoint::GRAPHICS};
     core->CmdSetDescriptorSet(*command, setDesc);
@@ -1053,12 +1063,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         static_cast<nri::Dim_t>(desc.Scissor.extent.height)};
     core->CmdSetViewports(*command, &viewport, 1);
     core->CmdSetScissors(*command, &scissor, 1);
-    const auto usesBlendConstants =
-        mImpl->OwnedPipelineUsesBlendConstants.find(
-            desc.PipelineId);
-    if (usesBlendConstants !=
-            mImpl->OwnedPipelineUsesBlendConstants.end() &&
-        usesBlendConstants->second) {
+    if (pipeline->second.UsesBlendConstants) {
         const nri::Color32f blend{
             desc.BlendConstants[0], desc.BlendConstants[1],
             desc.BlendConstants[2], desc.BlendConstants[3]};
@@ -1104,7 +1109,7 @@ bool NriPicaPipelineBridge::DrawBoundGeometry(const NriPicaOwnedDrawDesc& desc) 
     auto* core = mImpl->Interop->Core();
     auto* command = mImpl->Interop->CommandBuffer(desc.FrameIndex);
     if (!core || !command) return false;
-    core->CmdSetPipeline(*command, *pipeline->second);
+    core->CmdSetPipeline(*command, *pipeline->second.Pipeline);
     if (desc.Indexed) {
         core->CmdDrawIndexed(*command, {desc.VertexOrIndexCount, 1U, 0U, desc.BaseVertex, 0U});
     } else {
@@ -1140,7 +1145,6 @@ void NriPicaPipelineBridge::ForgetOwned(NriPicaPipelineId pipelineId) {
     if (const auto owned = mImpl->OwnedPipelines.find(pipelineId);
         owned != mImpl->OwnedPipelines.end()) {
         mImpl->OwnedPipelines.erase(owned);
-        mImpl->OwnedPipelineUsesBlendConstants.erase(pipelineId);
         mImpl->OwnedPipelineObjects.Prune();
     }
 #else
@@ -1171,7 +1175,6 @@ void NriPicaPipelineBridge::Reset() {
     mImpl->OwnedPipelines.clear();
     mImpl->OwnedPipelineObjects.Clear();
     mImpl->OwnedPipelineIdentity.Clear();
-    mImpl->OwnedPipelineUsesBlendConstants.clear();
 #endif
 }
 

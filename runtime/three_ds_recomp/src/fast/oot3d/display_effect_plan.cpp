@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <utility>
 
 namespace Fast::Oot3d {
 namespace {
@@ -408,6 +410,20 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     plan.Graph = graph.Compile();
     PopulateCompatibilityProjections(plan, input);
     return plan;
+}
+
+const DisplayEffectPlan& CachedDisplayEffectPlan(
+    const DisplayEffectPlanInput& input) {
+    thread_local std::vector<std::pair<DisplayEffectPlanInput,
+                                       std::unique_ptr<const DisplayEffectPlan>>>
+        plans;
+    for (const auto& [key, plan] : plans) {
+        if (key == input)
+            return *plan;
+    }
+    plans.emplace_back(input, std::make_unique<const DisplayEffectPlan>(
+                                  BuildDisplayEffectPlan(input)));
+    return *plans.back().second;
 }
 
 } // namespace Fast::Oot3d

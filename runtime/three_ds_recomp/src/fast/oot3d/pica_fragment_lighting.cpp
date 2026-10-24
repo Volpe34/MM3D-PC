@@ -81,14 +81,9 @@ uint64_t HashWord(uint64_t hash, uint32_t word) {
     return hash;
 }
 
-} // namespace
-
-PicaFragmentLightingState DecodePicaFragmentLighting(
+PicaFragmentLightingState DecodeFragmentLighting(
     std::span<const uint32_t> registers) {
     PicaFragmentLightingState state;
-    if (registers.size() < kRegisterCount) {
-        return state;
-    }
 
     state.Enabled = (Register(registers, 0x08FU) & 1U) != 0U &&
                     (Register(registers, 0x1C6U) & 1U) == 0U;
@@ -166,6 +161,39 @@ PicaFragmentLightingState DecodePicaFragmentLighting(
             static_cast<uint8_t>((scale >> shift) & 7U));
     }
     return state;
+}
+
+// The decode reads only 0x08F and 0x140..0x1D9, and a draw decodes the same
+// registers several times (features, layout, shader keys): the last result
+// is kept per thread and returned while those registers are unchanged.
+constexpr size_t kMemoFirst = kLightBase;
+constexpr size_t kMemoCount = 0x1DAU - kLightBase;
+
+struct DecodeMemo {
+    bool Valid = false;
+    uint32_t Enable = 0;
+    std::array<uint32_t, kMemoCount> Registers{};
+    PicaFragmentLightingState State;
+};
+
+} // namespace
+
+PicaFragmentLightingState DecodePicaFragmentLighting(
+    std::span<const uint32_t> registers) {
+    if (registers.size() < kRegisterCount) {
+        return {};
+    }
+    thread_local DecodeMemo memo;
+    const auto source = registers.subspan(kMemoFirst, kMemoCount);
+    if (memo.Valid && memo.Enable == registers[0x08FU] &&
+        std::equal(source.begin(), source.end(), memo.Registers.begin())) {
+        return memo.State;
+    }
+    memo.State = DecodeFragmentLighting(registers);
+    memo.Enable = registers[0x08FU];
+    std::copy(source.begin(), source.end(), memo.Registers.begin());
+    memo.Valid = true;
+    return memo.State;
 }
 
 PicaLightingLutWriteCursor DecodePicaLightingLutWriteCursor(uint32_t value) {

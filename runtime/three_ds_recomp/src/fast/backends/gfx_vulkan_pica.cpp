@@ -6741,7 +6741,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             display.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
             display.SceneResolved;
-        const auto effectPlan = Oot3d::BuildDisplayEffectPlan({
+        // Built once per distinct input (TRIAEVUM_NO_EFFECT_PLAN_CACHE=1
+        // rebuilds it every transfer, the old behaviour).
+        static const bool noEffectPlanCache =
+            std::getenv("TRIAEVUM_NO_EFFECT_PLAN_CACHE") != nullptr;
+        std::optional<Oot3d::DisplayEffectPlan> uncachedEffectPlan;
+        const Oot3d::DisplayEffectPlanInput effectPlanInput{
             .AlphaOverlay = alphaOverlay,
             .WorldSurface = worldSurface,
             .PerspectiveAvailable = presentationPerspective.has_value(),
@@ -6759,7 +6764,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             .AntiAliasing = presentationSettings.AntiAliasing,
             .Upscaler = presentationSettings.Upscaler,
             .GuideDiagnostics = Oot3d::PicaGuideDiagnosticMode() != 0,
-        });
+        };
+        const auto& effectPlan = noEffectPlanCache
+            ? uncachedEffectPlan.emplace(
+                  Oot3d::BuildDisplayEffectPlan(effectPlanInput))
+            : Oot3d::CachedDisplayEffectPlan(effectPlanInput);
         const auto motionBarrierPlan =
             Oot3d::BuildEffectPassBarrierPlan(
                 effectPlan.Graph,

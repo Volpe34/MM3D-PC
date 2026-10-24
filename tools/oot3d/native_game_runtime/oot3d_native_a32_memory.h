@@ -1,5 +1,6 @@
 #pragma once
 
+#include "oot3d_native_a32_inline.h"
 #include "recomp/a32_runtime.h"
 
 #include <array>
@@ -7,11 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -103,26 +106,12 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
             if (source != nullptr) {
                 std::memcpy(value, source + offset, sizeof(T));
                 if (mTraceWriteFingerprint) [[unlikely]] {
-                    uint64_t checked = 0;
-                    if (ReadSized(address, static_cast<uint8_t>(sizeof(T)),
-                                  &checked, nullptr) &&
-                        *value != static_cast<T>(checked)) {
-                        ++mFastReadMismatchCount;
-                        mLastFastReadMismatchAddress = address;
-                        mLastFastReadMismatchValue = *value;
-                        mLastCheckedReadMismatchValue = checked;
-                    }
+                    CheckTracedFastRead(address, *value);
                 }
                 return true;
             }
         }
-        uint64_t decoded = 0;
-        if (!ReadSized(address, static_cast<uint8_t>(sizeof(T)), &decoded,
-                       faultAddress)) {
-            return false;
-        }
-        *value = static_cast<T>(decoded);
-        return true;
+        return ReadFastMiss(address, value, faultAddress);
     }
 
     template <typename T>
@@ -153,6 +142,29 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
         }
         return WriteSized(address, static_cast<uint8_t>(sizeof(T)), value,
                           faultAddress);
+    }
+
+    // TRIAEVUM_GUEST_THREAD: while a guest step runs on guestThread, every
+    // other thread sees memory as it was when the step began (the step's
+    // first write to a page keeps the page's old bytes). A write from another
+    // thread first calls hostWriteBarrier, which must wait for the step and
+    // call EndHostSnapshot. verify: compare every page at the end (slow).
+    struct HostSnapshotStats {
+        uint64_t Steps = 0;
+        uint64_t SavedPages = 0;
+        uint64_t HostReads = 0;
+        uint64_t HostWriteBarriers = 0;
+        uint64_t UnsavedChangedPages = 0;
+    };
+    void BeginHostSnapshot(std::thread::id guestThread,
+                           std::function<void()> hostWriteBarrier,
+                           bool verify = false);
+    void EndHostSnapshot();
+    bool HostSnapshotActive() const noexcept { return mHostSnapshotActive; }
+    // A host thread about to use guest state directly: waits for the step.
+    void RequireHostAccess();
+    const HostSnapshotStats& SnapshotStats() const noexcept {
+        return mHostSnapshotStats;
     }
 
     bool Read8(uint32_t address, uint8_t* value) override;
@@ -196,6 +208,31 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                     uint32_t* faultAddress);
     void RecordTracedWrite(uint32_t address,
                            std::span<const uint8_t> bytes) noexcept;
+    // ReadFast's rare paths (outside the page table; write-trace checks).
+    template <typename T>
+    OOT3D_A32_COLD bool ReadFastMiss(uint32_t address, T* value,
+                                     uint32_t* faultAddress) const noexcept {
+        uint64_t decoded = 0;
+        if (!ReadSized(address, static_cast<uint8_t>(sizeof(T)), &decoded,
+                       faultAddress)) {
+            return false;
+        }
+        *value = static_cast<T>(decoded);
+        return true;
+    }
+    template <typename T>
+    OOT3D_A32_COLD void CheckTracedFastRead(uint32_t address,
+                                            T value) const noexcept {
+        uint64_t checked = 0;
+        if (ReadSized(address, static_cast<uint8_t>(sizeof(T)),
+                      &checked, nullptr) &&
+            value != static_cast<T>(checked)) {
+            ++mFastReadMismatchCount;
+            mLastFastReadMismatchAddress = address;
+            mLastFastReadMismatchValue = value;
+            mLastCheckedReadMismatchValue = checked;
+        }
+    }
     void FlushTracedPointerWrites() noexcept;
     static void SetError(std::string* error, std::string_view message);
 
@@ -221,6 +258,15 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     mutable uint64_t mLastFastReadMismatchValue = 0;
     mutable uint64_t mLastCheckedReadMismatchValue = 0;
     std::vector<std::pair<uint32_t, size_t>> mPendingTracedPointerWrites;
+    // Appended last: the title module inlines ReadFast/WriteFast against the
+    // members above.
+    struct HostSnapshot;
+    bool OnHostThread() const noexcept;
+    bool HostSnapshotRead(uint32_t address, std::span<uint8_t> bytes) const;
+    void PrepareWrite(uint32_t address, size_t size);
+    std::shared_ptr<HostSnapshot> mHostSnapshot;
+    bool mHostSnapshotActive = false;
+    HostSnapshotStats mHostSnapshotStats;
 };
 
 } // namespace Oot3dNativeGame

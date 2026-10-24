@@ -97,6 +97,12 @@ bool GraphicsSettingsPanel::DrawDisplaySettings(GraphicsSettings& settings, cons
     ImGui::EndDisabled();
     if (upscalerOwnsScale) ImGui::TextDisabled("Render scale is set by upscaler quality.");
     changed |= ImGui::Checkbox("VSync", &settings.VSync);
+    changed |= ImGui::Checkbox("Game logic on its own thread (experimental)",
+                               &settings.GuestThread);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Majora's Mask: runs the game's logic ahead on another CPU core.\n"
+                          "Same game, fewer frame-time spikes (most visible with VSync off).");
+    }
 
     ImGui::SeparatorText("Motion and camera");
     const char* const frameRates[] = {

@@ -72,6 +72,14 @@ uint64_t BuildOot3dPicaCanonicalVertexProgramId(
     const Oot3dPicaDrawPacket& packet,
     const Oot3dPicaDecodedDrawState& state);
 
+// DynamicStateId and FullRegisterStateId are 0 ("unavailable") unless this
+// is on: Vulkan diagnostics (OOT3D_VULKAN_DIAGNOSTICS_PATH) or
+// TRIAEVUM_DIAGNOSTIC_DRAW_IDS=1.
+bool Oot3dPicaDiagnosticDrawIdsEnabled() noexcept;
+uint64_t BuildOot3dPicaFullRegisterStateId(const Oot3dPicaDrawPacket& packet);
+uint64_t BuildOot3dPicaDynamicStateId(const Oot3dPicaDrawPacket& packet,
+                                      const Oot3dPicaDecodedDrawState& state);
+
 Oot3dPicaCanonicalDrawIdentity BuildOot3dPicaCanonicalDrawIdentity(
     const Oot3dPicaDrawPacket& packet,
     const Oot3dPicaDecodedDrawState& state);

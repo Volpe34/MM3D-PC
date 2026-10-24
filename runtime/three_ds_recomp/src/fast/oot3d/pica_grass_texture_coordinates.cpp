@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 namespace Fast::Oot3d {
 namespace {
@@ -33,6 +35,49 @@ bool ContainsCmbUv0Contract(std::string_view source) {
                "reg_tmp3.x = dot(sanitize_mul(uniforms.f[10].xyzw, reg_tmp10.xyzw), vec4(1.0))") &&
            has("reg_tmp3.y = dot(uniforms.f[11].xyzw, reg_tmp10.xyzw)",
                "reg_tmp3.y = dot(sanitize_mul(uniforms.f[11].xyzw, reg_tmp10.xyzw), vec4(1.0))");
+}
+
+// What the grass UV decode reads from a vertex program's text. Finding these
+// strings costs several passes over the whole GLSL source, and it ran for
+// every grass draw of every presented frame; the answers are kept per source
+// text (the stored copy is compared in full, so a reused buffer never answers
+// for different text).
+struct VertexSourceFacts {
+    bool CmbUv0Contract = false;
+    bool Mm3dInputScale = false;
+};
+
+VertexSourceFacts ComputeVertexSourceFacts(std::string_view source) {
+    return {ContainsCmbUv0Contract(source),
+            source.find("sanitize_mul(uniforms.f[90].zzzz, pica_input") !=
+                std::string_view::npos};
+}
+
+VertexSourceFacts VertexSourceFactsFor(std::string_view source) {
+    static const bool disabled =
+        std::getenv("TRIAEVUM_NO_GRASS_SOURCE_CACHE") != nullptr;
+    if (disabled)
+        return ComputeVertexSourceFacts(source);
+    struct Entry {
+        std::string Source;
+        VertexSourceFacts Facts;
+    };
+    struct KeyHash {
+        size_t operator()(const std::pair<const char*, size_t>& key) const noexcept {
+            return std::hash<const void*>{}(key.first) ^ (key.second * 0x9E3779B97F4A7C15ULL);
+        }
+    };
+    thread_local std::unordered_map<std::pair<const char*, size_t>, Entry, KeyHash> cache;
+    const std::pair<const char*, size_t> key{source.data(), source.size()};
+    if (const auto found = cache.find(key);
+        found != cache.end() && found->second.Source == source)
+        return found->second.Facts;
+    if (cache.size() >= 256U)
+        cache.clear();
+    auto& entry = cache[key];
+    entry.Source.assign(source);
+    entry.Facts = ComputeVertexSourceFacts(source);
+    return entry.Facts;
 }
 
 bool SamplesUv0WithNativeVFlip(
@@ -98,6 +143,7 @@ DecodePicaGrassTextureCoordinateTransform(
     const ::Oot3d::Renderer::PicaShaderHookLayout*
         fragmentShaderHooks) noexcept {
     PicaGrassTextureCoordinateTransform result;
+    const VertexSourceFacts sourceFacts = VertexSourceFactsFor(vertexShaderSource);
     bool typedVertexProgram =
         vertexShaderHooks != nullptr &&
         vertexShaderHooks->ValidFor(vertexShaderSource);
@@ -113,7 +159,7 @@ DecodePicaGrassTextureCoordinateTransform(
          vertexLayout->Operation !=
              ::Oot3d::Renderer::
                  PicaVertexTextureCoordinateOperation::CmbAffine) &&
-        ContainsCmbUv0Contract(vertexShaderSource)) {
+        sourceFacts.CmbUv0Contract) {
         // Hooks without a typed UV program (another title's CMB shader): the
         // native CMB contract still applies.
         typedVertexProgram = false;
@@ -138,11 +184,11 @@ DecodePicaGrassTextureCoordinateTransform(
             std::fprintf(stderr, "[grass-uv] typed %d hooks %d contract %d size %zu\n",
                          typedVertexProgram ? 1 : 0,
                          vertexShaderHooks != nullptr && vertexShaderHooks->ValidFor(vertexShaderSource) ? 1 : 0,
-                         ContainsCmbUv0Contract(vertexShaderSource) ? 1 : 0, vertexShaderSource.size());
+                         sourceFacts.CmbUv0Contract ? 1 : 0, vertexShaderSource.size());
         }
     }
     if (!typedVertexProgram &&
-        !ContainsCmbUv0Contract(vertexShaderSource)) {
+        !sourceFacts.CmbUv0Contract) {
         result.Eligibility =
             PicaGrassTextureCoordinateEligibility::
                 UnsupportedVertexProgram;
@@ -272,8 +318,7 @@ DecodePicaGrassTextureCoordinateTransform(
 
         // Majora's Mask 3D's CMB program: the same UV rows, its input scale
         // in f[90].z (written through sanitize_mul).
-        if (vertexShaderSource.find("sanitize_mul(uniforms.f[90].zzzz, pica_input") !=
-            std::string_view::npos) {
+        if (sourceFacts.Mm3dInputScale) {
             inputScale = uniforms[90U][2];
             rowU = &uniforms[10U];
             rowV = &uniforms[11U];
