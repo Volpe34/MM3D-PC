@@ -3,6 +3,7 @@
 #include "fast/oot3d/grass_instance_layout.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 
 #include <algorithm>
@@ -115,7 +116,7 @@ struct GrassGpuInstanceCompactor::Impl {
             return false;
         }
         if (waitBeforeResize && buffer.Handle != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(Device);
+            HITCH_DEVICE_WAIT_IDLE(Device);
         }
         DestroyBuffer(buffer);
         buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096U));
@@ -504,7 +505,7 @@ void GrassGpuInstanceCompactor::Shutdown() {
     if (!mImpl || mImpl->Device == VK_NULL_HANDLE) {
         return;
     }
-    vkDeviceWaitIdle(mImpl->Device);
+    HITCH_DEVICE_WAIT_IDLE(mImpl->Device);
     mImpl->DestroyBuffer(mImpl->StaticAnchors);
     for (auto& buffer : mImpl->StaticStaging) {
         mImpl->DestroyBuffer(buffer);

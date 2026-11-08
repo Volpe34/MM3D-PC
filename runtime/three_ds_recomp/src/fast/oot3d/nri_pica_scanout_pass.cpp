@@ -1,6 +1,7 @@
 #include "fast/oot3d/nri_pica_scanout_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 #include "fast/oot3d/nri_interop_context.h"
 
@@ -170,7 +171,7 @@ bool NriPicaScanoutPass::Configure(VkFormat targetFormat) {
     return false;
 #else
     if (mImpl->TargetFormat != VK_FORMAT_UNDEFINED &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS)
         return false;
     if (mImpl->BasePipeline != nullptr)
         mImpl->Core->DestroyPipeline(mImpl->BasePipeline);

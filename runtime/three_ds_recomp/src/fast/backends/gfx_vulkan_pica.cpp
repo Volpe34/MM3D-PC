@@ -1,5 +1,7 @@
 #ifdef ENABLE_OOT3D_VULKAN
 #include "fast/oot3d/pica_guide_diagnostics.h"
+#include "fast/renderer/hitch_log_vulkan.h"
+namespace HitchLog = ::Fast::Renderer::Hitch;
 #include "fast/oot3d/outline_diagnostics.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
 
@@ -829,7 +831,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
         sampleCount = VK_SAMPLE_COUNT_1_BIT;
     }
     WaitForAllPresents();
-    CheckNativeVk(vkDeviceWaitIdle(mDevice),
+    CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                   "vkDeviceWaitIdle(native PICA MSAA transaction)");
     EndNativePicaRenderPass();
     ForgetNativePicaEffectNriTextures();
@@ -2909,9 +2911,12 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
     const uint64_t* precomputedContentHash) {
     try {
         NativePicaTextureKey key;
-        key.ContentHash = precomputedContentHash != nullptr
-            ? *precomputedContentHash
-            : HashNativeBytes(texture.NativeBytes);
+        if (precomputedContentHash != nullptr) {
+            key.ContentHash = *precomputedContentHash;
+        } else {
+            HitchLog::Scope hashHitch(HitchLog::Event::TextureHash, texture.NativeBytes.size());
+            key.ContentHash = HashNativeBytes(texture.NativeBytes);
+        }
         key.ReplacementGeneration = replacementGeneration;
         key.PhysicalAddress = texture.PhysicalAddress;
         key.Width = texture.Width;
@@ -2927,9 +2932,11 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         key.MinMipLevel = texture.MinMipLevel;
         key.MaxMipLevel = texture.MaxMipLevel;
         const bool shadow2d = texture.NativeType == 2U;
-        const auto baseLevelContentHash = !shadow2d
-            ? ResolveNativeTextureBaseLevelContentHash(texture)
-            : std::nullopt;
+        const auto baseLevelContentHash = [&]() -> std::optional<uint64_t> {
+            if (shadow2d) return std::nullopt;
+            HitchLog::Scope hashHitch(HitchLog::Event::TextureHash);
+            return ResolveNativeTextureBaseLevelContentHash(texture);
+        }();
         if (!shadow2d) {
             if (baseLevelContentHash.has_value()) {
                 Oot3d::TextureCatalogRuntime::Instance().Observe(
@@ -2983,6 +2990,8 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 }
                 record.CustomReplacementHash = replacementHash;
                 record.CustomReplacementReady = replacement;
+                if (replacement)
+                    HitchLog::Count(HitchLog::Event::HdTextureImage, 1U, pixels.size());
                 static const bool replacementTrace =
                     std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
                 if (replacementTrace && replacement) {
@@ -3169,6 +3178,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
             }
         }
 
+        HitchLog::Scope createHitch(HitchLog::Event::TextureCreate, texture.NativeBytes.size());
         std::vector<uint8_t> pixels;
         std::string decodeError;
         VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -3194,6 +3204,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     "native PICA texture has no valid mip levels");
             }
             size_t nativeOffset = 0U;
+            const uint64_t decodeStart = HitchLog::Enabled() ? HitchLog::NowNanoseconds() : 0U;
             for (uint32_t level = 0U; level < mipLevels; ++level) {
                 const uint32_t mipWidth =
                     std::max(1U, static_cast<uint32_t>(texture.Width) >> level);
@@ -3227,6 +3238,9 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                               decodedMip.end());
                 nativeOffset += *encodedBytes;
             }
+            if (HitchLog::Enabled())
+                HitchLog::Add(HitchLog::Event::TextureDecode, HitchLog::NowNanoseconds() - decodeStart, pixels.size());
+            HitchLog::Scope grassHitch(HitchLog::Event::TextureGrassObserve);
             Oot3d::GrassTextureSourceCache::Instance().ObserveDecoded(
                 baseLevelContentHash.value_or(key.ContentHash),
                 key.Width, key.Height,
@@ -3248,6 +3262,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         ::Oot3d::Renderer::AzaharTextureResolveResult
             replacementResult;
         if (!shadow2d) {
+            HitchLog::Scope hdHitch(HitchLog::Event::TextureHdResolve);
             replacementResult =
                 ::Oot3d::Renderer::AzaharTexturePackRuntime::
                     Instance()
@@ -3384,6 +3399,9 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
     texture.MipLevels = mipLevels;
     texture.UploadedMipLevels = 0;
 
+    HitchLog::Scope imageHitch(HitchLog::Event::TextureImage, pixels.size());
+    std::optional<HitchLog::Scope> allocationHitch;
+    allocationHitch.emplace(HitchLog::Event::TextureAlloc);
     Oot3d::NriPicaTextureImage nriTexture;
     if (mNriPicaTextureImageOwner.Create(
             width, height, format, mipLevels, nriTexture)) {
@@ -3426,6 +3444,7 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
                 mDevice, texture.Image, texture.Memory, 0),
             "vkBindImageMemory(native PICA texture)");
     }
+    allocationHitch.reset();
 
     EndNativePicaRenderPass();
     if (mRenderPassActive) {
@@ -3629,6 +3648,7 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
     Oot3d::PicaShaderInstrumentationFeature requestedFeatures,
     Oot3d::PicaShaderInstrumentationFeature appliedFeatures,
     bool recordInventory, bool outlineOcclusionOnly, bool requireVulkan) {
+    HitchLog::Scope uncachedHitch(HitchLog::Event::PipelineUncached);
     const auto resolvedState = Oot3d::BuildPicaNriPipelineState(
         draw, shader.FragmentOutputs, mFramePicaAttachmentRequirements,
         mNativePicaSampleCount, mDepthFormat, writesReactiveMask, outlineOcclusionOnly);
@@ -3771,7 +3791,12 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
         nriPipeline.FragmentSpirv = shader.NriFragmentSpirv;
         nriPipeline.VertexBindings = nriBindings;
         nriPipeline.VertexAttributes = nriAttributes;
-        if (!mNriPicaPipelineBridge.FinishOrWithdrawAsyncPipeline(record.Id, nriPipeline) &&
+        bool finished = false;
+        {
+            HitchLog::Scope waitHitch(HitchLog::Event::PipelineAsyncWait);
+            finished = mNriPicaPipelineBridge.FinishOrWithdrawAsyncPipeline(record.Id, nriPipeline);
+        }
+        if (!finished &&
             !mNriPicaPipelineBridge.CreateOwnedPipeline(
                 record.Id, nriPipeline)) {
             SPDLOG_WARN(
@@ -3872,9 +3897,12 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
                 : mNativePicaRenderPass;
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
-    CheckNativeVk(vkCreateGraphicsPipelines(mDevice, mPipelineCache, 1,
-                                            &pipelineInfo, nullptr, &pipeline),
-                  "vkCreateGraphicsPipelines(native PICA)");
+    {
+        HitchLog::Scope createHitch(HitchLog::Event::PipelineCreate);
+        CheckNativeVk(vkCreateGraphicsPipelines(mDevice, mPipelineCache, 1,
+                                                &pipelineInfo, nullptr, &pipeline),
+                      "vkCreateGraphicsPipelines(native PICA)");
+    }
     record.Vulkan = pipeline;
     ++mNativePicaVulkanPipelineCreations;
     return record;
@@ -3901,6 +3929,7 @@ void GfxRenderingAPIVulkan::PrewarmNativePicaPipelines() {
     if (!mPicaPipelinePrewarmedProfiles.insert(profile).second) {
         return;
     }
+    HitchLog::Scope prewarmHitch(HitchLog::Event::PipelinePrewarm);
 
     const std::array<uint8_t, 1> dummyVertexBytes{};
     // Two passes: the first queues every missing pipeline to the background
@@ -4140,8 +4169,36 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
     }
 }
 
+bool GfxRenderingAPIVulkan::BeginPicaDrawProbe() {
+    if (!mFrameActive || mPicaDrawProbe) return false;
+    mPicaDrawProbe = true;
+    mPicaDrawProbeQueuedShaders = false;
+    return true;
+}
+
+bool GfxRenderingAPIVulkan::EndPicaDrawProbe() {
+    if (!mPicaDrawProbe) return false;
+    mPicaDrawProbe = false;
+    if (!mPicaDrawProbeQueuedShaders) return false;
+    mPicaDrawProbeQueuedShaders = false;
+    // The frame needs these now: wait for them here, compiled in parallel,
+    // rather than one by one as its draws reach them.
+    HitchLog::Scope waitHitch(HitchLog::Event::ShaderProbeWait);
+    std::unique_lock lock(mAsyncShaderMutex);
+    mAsyncShaderDone.wait(lock, [&] { return mAsyncShaderPending.empty() || mAsyncShaderStop; });
+    return true;
+}
+
 bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     const GfxNativePicaDrawView& draw, std::string* error) {
+    if (mPicaDrawProbe) {
+        // Preparation only (BeginPicaDrawProbe): no HUD copies, no schedule.
+        mPicaDrawProbeDrawQueued = false;
+        HitchLog::Scope probeHitch(HitchLog::Event::ProbeDraw);
+        std::string ignored;
+        (void)SubmitPicaDrawImpl(draw, &ignored);
+        return true;
+    }
     if (EnvSet_TRIAEVUM_VP_DEBUG()) {
         std::fprintf(stderr, "[vp] f%llu fb %08x vp %.0f,%.0f %.0fx%.0f tex %08x %ux%u hash %016llx\n",
                      static_cast<unsigned long long>(mFrameCounter),
@@ -4326,8 +4383,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             return true;
         }
     }
+    HitchLog::Scope drawHitch(HitchLog::Event::PicaDraw);
     try {
-        const bool collectCpuTimings = mDiagnostics.Enabled();
+        const bool collectCpuTimings = mDiagnostics.Enabled() || HitchLog::Enabled();
         using CpuClock = std::chrono::steady_clock;
         auto cpuStart = CpuClock::time_point{};
         auto cpuStageStart = CpuClock::time_point{};
@@ -4391,7 +4449,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                 draw.FramebufferColorFormat,
                 draw.FramebufferDepthFormat,
             };
-        if (mNativePicaCompositionSchedule.Valid() && !mHudLayerDrawing) {
+        if (mNativePicaCompositionSchedule.Valid() && !mHudLayerDrawing && !mPicaDrawProbe) {
             std::string scheduleError;
             const bool matched =
                 mNativePicaCompositionSchedule.ConsumeDraw(
@@ -4402,9 +4460,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                 throw std::runtime_error(scheduleError);
             }
         }
-        for (const auto& texture : draw.Textures)
-            NoteTargetTexture(mFrameCounter, draw.FramebufferColorPhysicalAddress,
-                              texture.Width, texture.Height, texture.NativeContentHash);
+        if (!mPicaDrawProbe)
+            for (const auto& texture : draw.Textures)
+                NoteTargetTexture(mFrameCounter, draw.FramebufferColorPhysicalAddress,
+                                  texture.Width, texture.Height, texture.NativeContentHash);
         const bool sceneDraw =
             draw.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene;
@@ -4754,7 +4813,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             : mInstrumentedNativePicaShaders;
         auto shaderIt = nativeShaderCache.find(shaderKey);
         if (shaderIt == nativeShaderCache.end()) try {
-            mAsyncShaderScope = ShaderBuildMaySkipDraw(draw);
+            mAsyncShaderScope = mPicaDrawProbe || ShaderBuildMaySkipDraw(draw);
             struct ScopeReset {
                 bool& Flag;
                 ~ScopeReset() { Flag = false; }
@@ -4819,10 +4878,16 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             }
             shaderIt = nativeShaderCache.emplace(shaderKey, std::move(shader)).first;
         } catch (const Oot3d::PicaShaderPending&) {
+            if (mPicaDrawProbe) {
+                mPicaDrawProbeQueuedShaders = true;
+                mPicaDrawProbeDrawQueued = true;
+                return true;
+            }
             // Compiling in the background: skip this draw rather than stall.
             // Its target must still exist for the display transfers that read it.
             (void)GetOrCreateNativePicaRenderTarget(draw);
             ++mAsyncShaderSkippedDraws;
+            HitchLog::Count(HitchLog::Event::AsyncSkippedDraw);
             TraceSkippedDraw(draw, "shader");
             return true;
         }
@@ -4830,6 +4895,22 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             shaderIt->second.NriDescriptorContract,
             mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
+        if (mPicaDrawProbe) {
+            // The shaders exist: start the draw's main pipeline on a worker.
+            try {
+                mAsyncShaderScope = true;
+                struct ScopeReset {
+                    bool& Flag;
+                    ~ScopeReset() { Flag = false; }
+                } scopeReset{mAsyncShaderScope};
+                (void)GetOrCreateNativePicaPipeline(
+                    effectiveDraw, shaderIt->second, shaderVariant.Reactive,
+                    shaderVariant.Domain, shaderVariant.RequestedFeatures,
+                    shaderVariant.AppliedFeatures);
+            } catch (const Oot3d::PicaShaderPending&) {
+            }
+            return true;
+        }
 
         std::array<TextureRecord*, 3> textures{
             &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};
@@ -5097,6 +5178,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
         } catch (const Oot3d::PicaShaderPending&) {
             // The pipeline is being built in the background: skip, don't stall.
             ++mAsyncShaderSkippedDraws;
+            HitchLog::Count(HitchLog::Event::AsyncSkippedDraw);
             TraceSkippedDraw(draw, "pipeline");
             return true;
         }
@@ -6025,7 +6107,24 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             cpuTimings.TotalMilliseconds =
                 std::chrono::duration<double, std::milli>(
                     CpuClock::now() - cpuStart).count();
-            mDiagnostics.RecordNativePicaCpuTimings(cpuTimings);
+            if (mDiagnostics.Enabled()) mDiagnostics.RecordNativePicaCpuTimings(cpuTimings);
+            if (HitchLog::Enabled()) {
+                const auto stage = [](HitchLog::Event event, double milliseconds) {
+                    if (milliseconds > 0.0)
+                        HitchLog::Add(event, static_cast<uint64_t>(milliseconds * 1e6));
+                };
+                stage(HitchLog::Event::DrawShaderVariant, cpuTimings.ShaderVariantMilliseconds);
+                stage(HitchLog::Event::DrawShaderCache, cpuTimings.ShaderCacheMilliseconds);
+                stage(HitchLog::Event::DrawTexture, cpuTimings.TextureMilliseconds);
+                stage(HitchLog::Event::DrawGrassSurface, cpuTimings.GrassSurfaceMilliseconds);
+                stage(HitchLog::Event::DrawTarget, cpuTimings.RenderTargetStateMilliseconds);
+                stage(HitchLog::Event::DrawReflection, cpuTimings.ReflectionEnvironmentMilliseconds);
+                stage(HitchLog::Event::DrawTemporal, cpuTimings.TemporalStateMilliseconds);
+                stage(HitchLog::Event::DrawPipeline, cpuTimings.PipelineMilliseconds);
+                stage(HitchLog::Event::DrawUpload, cpuTimings.UploadMilliseconds);
+                stage(HitchLog::Event::DrawDescriptor, cpuTimings.DescriptorMilliseconds);
+                stage(HitchLog::Event::DrawCommand, cpuTimings.CommandMilliseconds);
+            }
         }
         mDiagnostics.RecordNriPicaPipelineBind(
             nriPipelineBound);
@@ -6072,6 +6171,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     Oot3d::EffectGeometryProviderInvocationKind invocationKind) {
+    HitchLog::Scope grassHitch(HitchLog::Event::GrassRender);
     const auto latestPerspective =
         Oot3d::SceneViewRuntime::Instance().LatestPerspective();
     (void)mNativeSceneView.Publish(
@@ -6264,6 +6364,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     const Oot3d::PicaCompositionStageAnchor& anchor) {
+    HitchLog::Scope shadowHitch(HitchLog::Event::ShadowRender);
     const auto boundary = Oot3d::BuildPicaExtensionScheduleBoundary(
         mNativePicaCompositionSchedule, anchor);
     const auto decision = mDirectionalShadowSchedulePlan.Resolve(boundary);
@@ -7027,7 +7128,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             if (!mNriEffectGraphTransientImageArena.ConfiguredFor(
                     allocationPlan)) {
                 CheckNativeVk(
-                    vkDeviceWaitIdle(mDevice),
+                    HITCH_DEVICE_WAIT_IDLE(mDevice),
                     "vkDeviceWaitIdle(effect graph image clients)");
                 ReleaseEffectGraphImageClients();
             }
@@ -8420,7 +8521,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     Oot3d::SceneColorIsSrgb(dlss.InputEncoding),
                 };
                 if (!mD3d12NgxProvider.ConfiguredForFrameContract(contract)) {
-                    CheckNativeVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(D3D12 NGX frame contract)");
+                    CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(D3D12 NGX frame contract)");
                     for (uint32_t slot = 0U; slot < kFramesInFlight; ++slot) {
                         const VkImage oldOutput = mD3d12NgxProvider.FrameOutputImage(slot);
                         if (oldOutput != VK_NULL_HANDLE)
@@ -9368,7 +9469,7 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
                 "native PICA texture capture requires an idle frame boundary");
         }
         WaitForAllPresents();
-        CheckNativeVk(vkDeviceWaitIdle(mDevice),
+        CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                       "vkDeviceWaitIdle(native PICA texture capture)");
         for (const auto& [key, texture] : mNativePicaTextures) {
             // GENERAL entries alias live Shadow2D render-target images. Their
@@ -9587,7 +9688,7 @@ bool GfxRenderingAPIVulkan::CapturePicaColorTargets(
                 "native PICA color capture does not yet support multisampled targets");
         }
         WaitForAllPresents();
-        CheckNativeVk(vkDeviceWaitIdle(mDevice),
+        CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                       "vkDeviceWaitIdle(native PICA color capture)");
         for (const auto& [key, target] : mNativePicaRenderTargets) {
             if (target.ColorImage == VK_NULL_HANDLE) {
@@ -9815,7 +9916,7 @@ bool GfxRenderingAPIVulkan::CapturePicaPresentationState(
                 "native PICA presentation capture requires an idle frame boundary");
         }
         WaitForAllPresents();
-        CheckNativeVk(vkDeviceWaitIdle(mDevice),
+        CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                       "vkDeviceWaitIdle(native PICA presentation capture)");
         for (const auto& [key, image] : mNativePicaDisplayImages) {
             GfxNativePicaDisplayImageColorSnapshot imageSnapshot;
@@ -10008,7 +10109,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
     std::string* error) {
     try {
         EndNativePicaRenderPass();
-        CheckNativeVk(vkDeviceWaitIdle(mDevice),
+        CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                       "vkDeviceWaitIdle(native PICA state reset)");
         DestroyNativePicaGeometryResources();
         mRawTextureCopyWritebacks.clear();
@@ -10606,7 +10707,7 @@ void GfxRenderingAPIVulkan::ApplyInternalResolutionScale(float scale) {
 void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayImages) {
     EndNativePicaRenderPass();
     WaitForAllPresents();
-    CheckNativeVk(vkDeviceWaitIdle(mDevice),
+    CheckNativeVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                   "vkDeviceWaitIdle(PICA render target reconfiguration)");
     ForgetNativePicaEffectNriTextures();
     mCacaoPass.InvalidateScreenResources();

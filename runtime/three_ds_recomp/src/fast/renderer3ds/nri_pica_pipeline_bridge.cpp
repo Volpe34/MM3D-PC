@@ -1,4 +1,5 @@
 #include "fast/renderer3ds/nri_pica_pipeline_bridge.h"
+#include "fast/renderer/hitch_log.h"
 #include <chrono>
 
 #ifdef ENABLE_RENDERER3DS_VULKAN
@@ -33,6 +34,9 @@
 
 namespace Fast::Renderer3ds {
 namespace {
+
+// Async pipeline workers: their driver time is not the render thread's.
+thread_local bool tAsyncPipelineWorker = false;
 
 #ifdef ENABLE_RENDERER3DS_NRI
 nri::Topology ToNriTopology(VkPrimitiveTopology topology) {
@@ -593,6 +597,9 @@ nri::Pipeline* NriPicaPipelineBridge::CreatePipeline(const NriPicaGraphicsPipeli
     pipeline.cache = mImpl->PipelineCache;
     nri::Pipeline* owned = nullptr;
     const auto start = std::chrono::steady_clock::now();
+    ::Fast::Renderer::Hitch::Scope hitch(tAsyncPipelineWorker
+                                             ? ::Fast::Renderer::Hitch::Event::PipelineCreateWorker
+                                             : ::Fast::Renderer::Hitch::Event::PipelineCreate);
     const auto result = mImpl->Interop->Core()->CreateGraphicsPipeline(
         *mImpl->Interop->Device(), pipeline, owned);
     std::lock_guard statisticsLock(mImpl->Async->StatisticsMutex);
@@ -725,6 +732,7 @@ NriPicaPipelineBridge::AsyncPipelineState NriPicaPipelineBridge::CreateOwnedPipe
             const unsigned workers = std::clamp(cores - 2U, 2U, 10U);
             for (unsigned worker = 0; worker < workers; ++worker) {
                 async.Workers.emplace_back([this, &async] {
+                    tAsyncPipelineWorker = true;
                     for (;;) {
                         NriPicaAsyncPipelines::Job job;
                         {

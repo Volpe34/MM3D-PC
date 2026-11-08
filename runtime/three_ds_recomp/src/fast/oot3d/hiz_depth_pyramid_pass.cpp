@@ -1,6 +1,7 @@
 #include "fast/oot3d/hiz_depth_pyramid_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/resource_state_tracker.h"
@@ -189,7 +190,7 @@ bool HiZDepthPyramidPass::Configure(
         return true;
     }
     if (mImpl->Image != VK_NULL_HANDLE &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS)
         return false;
     if (outputMatches) {
         if (!mImpl->Interop->WrapTexture(

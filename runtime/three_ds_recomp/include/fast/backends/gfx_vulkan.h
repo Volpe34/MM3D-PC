@@ -157,6 +157,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::string* error = nullptr) override;
     bool SubmitPicaDraw(const GfxNativePicaDrawView& draw,
                         std::string* error = nullptr) override;
+    bool BeginPicaDrawProbe() override;
+    bool EndPicaDrawProbe() override;
+    bool PicaDrawProbeNeedsAnotherRound() const override { return mPicaDrawProbeDrawQueued; }
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;
@@ -603,6 +606,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::vector<uint32_t> CompileShaderSpirvInScope(std::string_view source, bool vertexShader,
                                                     const char* sourceName);
     void AsyncShaderWorkerMain();
+    void StartAsyncShaderWorkersLocked();
+    void WarmShaderCompiler();
     void StopAsyncShaderWorkers();
     std::mutex mAsyncShaderMutex;
     std::condition_variable mAsyncShaderCondition;
@@ -613,6 +618,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mAsyncShaderStop = false;
     bool mAsyncShaderScope = false;
     uint64_t mAsyncShaderSkippedDraws = 0;
+    std::condition_variable mAsyncShaderDone;
+    bool mShaderCompilerWarmed = false;
+    // Draw preparation probe (BeginPicaDrawProbe): no recording, builds only.
+    bool mPicaDrawProbe = false;
+    bool mPicaDrawProbeQueuedShaders = false;
+    bool mPicaDrawProbeDrawQueued = false;
     void WaitForFramePresent(uint32_t frameIndex);
     void WaitForAllPresents();
     void PresentWorkerMain();

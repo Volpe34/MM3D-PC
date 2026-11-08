@@ -4,6 +4,7 @@
 #include "oot3d_cpu_phase_probe.h"
 #include "fast/renderer/frame_time_distribution.h"
 #include "fast/renderer/slow_frame_samples.h"
+#include "fast/renderer/hitch_log.h"
 #include "oot3d/renderer/azahar_texture_pack.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "oot3d_game_language_panel.h"
@@ -4476,7 +4477,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     window.SetTargetFps(0);
   }
   auto &api = GetActiveRenderingApiForDemo(window);
-  if (launch.PicaParametricTev) {
+  if (launch.PicaParametricTev && !foreignTitle) {
     if (auto* preparation = dynamic_cast<Fast::Renderer3ds::PicaProgramPreparationBackend*>(&api))
       preparation->PrepareNativePicaPrograms(Oot3dNativeGame::NativePicaVertexProgramFamily());
   }
@@ -4544,6 +4545,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   shaderSourceCache.TevMode = launch.PicaParametricTev
       ? Oot3dNativeGame::Oot3dPicaTevMode::Parametric
       : Oot3dNativeGame::Oot3dPicaTevMode::Specialized;
+  shaderSourceCache.RequireTranslatedVertexPrograms = !foreignTitle;
   Oot3dNativeGame::Oot3dPicaSemanticTraceWriter picaSemanticTrace(
       launch.PicaSemanticTracePath);
   picaSemanticTrace.BeginSession(
@@ -5092,6 +5094,18 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }();
         static size_t nextWarp = 0;
         static auto lastWarp = std::chrono::steady_clock::now();
+        // TRIAEVUM_WARP_FRAMES=<n>: warp every n passes here instead of by
+        // wall clock, so runs with --fixed-delta-seconds repeat exactly
+        // (framebuffer comparisons between builds).
+        static const long warpFrames = [] {
+          const char *value = std::getenv("TRIAEVUM_WARP_FRAMES");
+          return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+        }();
+        static long warpTicks = 0;
+        ++warpTicks;
+        const bool warpDue = warpFrames > 0
+            ? warpTicks >= warpFrames
+            : std::chrono::duration<double>(std::chrono::steady_clock::now() - lastWarp).count() >= warpSeconds;
         auto &memory = process.Memory();
         uint32_t context = 0, game = 0, type = 0;
         if (std::getenv("TRIAEVUM_PLAYER_DEBUG")) {
@@ -5116,8 +5130,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           memory.Read32(0x0072F5C0U, &c); if (c) memory.Read32(c + 0x16CU, &g); if (g) memory.Read32(g + 0x13CU, &t);
           std::fprintf(stderr, "TRIAEVUM_WARP_DEBUG context=%08X game=%08X type=%08X\n", c, g, t);
         }
-        if (nextWarp < warpEntrances.size() &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - lastWarp).count() >= warpSeconds &&
+        if (nextWarp < warpEntrances.size() && warpDue &&
             memory.Read32(0x0072F5C0U, &context) && context >= 0x100000U &&
             memory.Read32(context + 0x16CU, &game) && game >= 0x100000U && (game & 3U) == 0U &&
             memory.Read32(game + 0x13CU, &type) && ((type >> 8U) & 0xFFU) == 4U) {
@@ -5139,6 +5152,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                                   .count()));
           ++nextWarp;
           lastWarp = std::chrono::steady_clock::now();
+          warpTicks = 0;
         }
       }
     }
@@ -6173,7 +6187,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         // F9 drops a marker into the fling trace (TRIAEVUM_FLING_TRACE).
         static bool markKeyWasDown = false;
         const bool markKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F9);
-        if (markKeyDown && !markKeyWasDown) Oot3dNativeGame::FlingTraceMark();
+        if (markKeyDown && !markKeyWasDown) {
+          Oot3dNativeGame::FlingTraceMark();
+          Fast::Renderer::Hitch::Mark();  // and into MM3D_HITCH_LOG, to separate route passes
+        }
         markKeyWasDown = markKeyDown;
       }
       const bool overlayKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F4);
@@ -9062,6 +9079,24 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    (phaseTiming.GuestInsidePicaSubmitSeconds - nestedGuestBeforeFrame) * 1000.0,
                    ms(11), ms(7), ms(13), ms(14));
       previousFrameEnd = completedFrameTime;
+    }
+    if (Fast::Renderer::Hitch::Enabled()) {
+      static auto previousHitchFrameEnd = completedFrameTime;
+      const auto phases = phaseTiming.Values();
+      const auto ms = [&](size_t index) { return (phases[index] - phaseBeforeFrame[index]) * 1000.0; };
+      Fast::Renderer::Hitch::HostFrameTiming hitchTiming;
+      hitchTiming.HostFrame = presentationFrameCount;
+      hitchTiming.GuestFrame = frameCount;
+      hitchTiming.FrameMilliseconds =
+          std::chrono::duration<double, std::milli>(completedFrameTime - previousHitchFrameEnd).count();
+      hitchTiming.GuestMilliseconds = ms(0);
+      hitchTiming.RendererFrameStartMilliseconds = ms(4);
+      hitchTiming.PicaSubmitMilliseconds = ms(7);
+      hitchTiming.VisualPresentationMilliseconds = ms(11);
+      hitchTiming.PresentMilliseconds = ms(13);
+      hitchTiming.PacingWaitMilliseconds = ms(14);
+      Fast::Renderer::Hitch::EndHostFrame(hitchTiming);
+      previousHitchFrameEnd = completedFrameTime;
     }
     if (!benchmarkMeasurementStarted &&
         runFrameCount >= hostArgs.BenchmarkWarmupFrames) {

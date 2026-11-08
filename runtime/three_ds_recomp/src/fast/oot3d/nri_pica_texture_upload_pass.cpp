@@ -1,4 +1,5 @@
 #include "fast/oot3d/nri_pica_texture_upload_pass.h"
+#include "fast/renderer/hitch_log.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
 
@@ -59,6 +60,7 @@ struct NriPicaTextureUploadPass::Impl {
             return false;
         nri::BufferDesc bufferDesc{};
         bufferDesc.size = capacity;
+        ::Fast::Renderer::Hitch::Scope hitch(::Fast::Renderer::Hitch::Event::UploadBufferCreate, capacity);
         if (Core->CreateCommittedBuffer(
                 *Device, nri::MemoryLocation::HOST_UPLOAD, 0.0F,
                 bufferDesc, upload.Buffer) != nri::Result::SUCCESS)

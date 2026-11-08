@@ -1,6 +1,7 @@
 #include "fast/oot3d/motion_vector_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 #include "fast/oot3d/motion_vectors.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
 #include "fast/oot3d/nri_interop_context.h"
@@ -253,7 +254,7 @@ bool MotionVectorPass::Configure(
     (void)depthFormat; (void)materialGuideFormat; (void)rigidMotionGuideFormat;
     return false;
 #else
-    if (mImpl->Width != 0 && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0 && HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS)
         return false;
     InvalidateScreenResources();
     try {

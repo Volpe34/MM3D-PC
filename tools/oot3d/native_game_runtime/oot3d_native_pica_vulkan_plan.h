@@ -188,6 +188,10 @@ struct Oot3dPicaVulkanCachedVertexStructuralState {
 
 struct Oot3dPicaVulkanShaderSourceCache {
     Oot3dPicaTevMode TevMode = Oot3dPicaTevMode::Specialized;
+    // Parametric mode normally also requires the offline-translated OoT3D
+    // vertex family. Other titles' vertex programs are not in it: they keep
+    // the runtime vertex translator (as in specialized mode).
+    bool RequireTranslatedVertexPrograms = true;
     std::unordered_map<uint64_t, Oot3dPicaVulkanCachedShaderSource>
         VertexSources;
     std::unordered_map<uint64_t, Oot3dPicaVulkanCachedShaderSource>

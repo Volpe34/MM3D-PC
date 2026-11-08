@@ -1,5 +1,7 @@
 #ifdef ENABLE_OOT3D_VULKAN
 #include "fast/backends/gfx_vulkan.h"
+#include "fast/renderer/hitch_log_vulkan.h"
+namespace HitchLog = ::Fast::Renderer::Hitch;
 #include "fast/renderer3ds/pica_framebuffer_encode.h"
 #include <algorithm>
 #include <stdexcept>
@@ -179,8 +181,9 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &command;
+        HitchLog::Count(HitchLog::Event::RawCopySubmit);
         RequireCopyVk(vkQueueSubmit(mGraphicsQueue, 1, &submit, VK_NULL_HANDLE), "submit raw-copy prefix");
-        RequireCopyVk(vkQueueWaitIdle(mGraphicsQueue), "wait raw-copy prefix");
+        RequireCopyVk(HITCH_QUEUE_WAIT_IDLE(mGraphicsQueue), "wait raw-copy prefix");
         const auto rgba = CaptureNativePicaImageBytes(source->ColorImage, source->Width, source->Height, 4,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);

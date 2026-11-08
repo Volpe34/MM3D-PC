@@ -1,6 +1,7 @@
 #include "fast/oot3d/nri_directional_shadow_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/pica_directional_shadow_caster.h"
@@ -912,7 +913,7 @@ NriDirectionalShadowPass::FindLatestHistory(
 
 void NriDirectionalShadowPass::InvalidateScreenResources() {
     if (mImpl->Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(mImpl->Device);
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device);
     }
     mImpl->DestroyOwnedTextures();
 }

@@ -1,4 +1,5 @@
 #include "oot3d_native_a32_ctr_host.h"
+#include "fast/renderer/hitch_log.h"
 #include "oot3d_cpu_phase_probe.h"
 
 #if !defined(OOT3D_CTR_HOST_SERVICE_PICA_ONLY)
@@ -2350,6 +2351,7 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
                     length <= fileHandle->Object->FileSize - offset) {
                     std::vector<uint8_t> bytes(length);
                     bool readSucceeded = false;
+                    ::Fast::Renderer::Hitch::Scope readHitch(::Fast::Renderer::Hitch::Event::GuestFileRead, length);
                     if (fileHandle->Object->FileBackend) {
                         const bool isRomFs =
                             *sessionType == "client_session:file:romfs";

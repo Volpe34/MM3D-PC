@@ -120,6 +120,20 @@ std::string IdentifyCompiler() {
 }
 }
 
+namespace {
+// Each shaderc::Compiler holds a glslang process initializer. When the last
+// one is destroyed glslang finalizes, discarding its built-in symbol tables,
+// and the next compile rebuilds them: about 80 ms of a 105 ms MM3D fragment
+// compile, paid on the render thread for every new material. One compiler
+// kept for the whole process keeps glslang initialized (about 22 ms per
+// compile). Every compile still uses its own Compiler, so threads do not
+// share one, and the generated SPIR-V is byte-identical.
+void KeepGlslangInitialized() {
+    static const shaderc::Compiler keeper;
+    (void)keeper;
+}
+} // namespace
+
 const std::string& ShadercCompilerContract() {
     static const std::string contract = [] {
         try { return IdentifyCompiler(); }
@@ -136,6 +150,7 @@ std::vector<uint32_t> CompileShadercSpirv(std::string_view source, SpirvStage st
         case SpirvStage::Compute: kind = shaderc_compute_shader; break;
         default: throw std::invalid_argument("unsupported shader stage");
     }
+    KeepGlslangInitialized();
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
@@ -187,6 +202,7 @@ std::vector<uint32_t> CachedPassShaderCompiler::Resolve(
             case SpirvStage::Compute: kind = shaderc_compute_shader; break;
             default: throw std::invalid_argument("unsupported pass shader stage");
         }
+        KeepGlslangInitialized();
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);

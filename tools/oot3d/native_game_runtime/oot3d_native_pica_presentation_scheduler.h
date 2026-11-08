@@ -135,6 +135,10 @@ private:
   std::optional<uint64_t> mPresentationSerial;
   uint64_t mNextCompositionSequenceId = 1U;
   std::unordered_set<uint64_t> mExecutedDrawsThisPresentation;
+  // Draw identities (pipeline, shaders, attachments) already prepared once.
+  std::unordered_set<uint64_t> mPreparedDrawKeys;
+  std::vector<const Oot3dPicaVisualDrawView *> mProbeScratch;
+  std::vector<const Oot3dPicaVisualDrawView *> mProbeRetryScratch;
   std::vector<Oot3d::Renderer::PicaCompositionDrawReference>
       mCompositionDrawScratch;
   std::map<SnapshotTarget, uint64_t> mSnapshotCompletions;
