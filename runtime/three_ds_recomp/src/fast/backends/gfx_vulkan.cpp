@@ -3461,6 +3461,7 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
     mCompiledShaderCacheSummaryLogged = false;
     if (!mCompiledShaderCache.Enabled())
         SPDLOG_WARN("SPIR-V disk reuse disabled: cache directory or compiler identity unavailable");
+    WarmShaderCompiler();
     mPicaAotShaderPack.Clear();
     mPicaEffectiveShaderInventory.Clear();
     mPicaPipelineInventory.Clear();
@@ -3770,18 +3771,43 @@ std::vector<uint32_t> GfxRenderingAPIVulkan::CompileShaderSpirvInScope(
         std::lock_guard lock(mAsyncShaderMutex);
         mAsyncShaderPending.insert(key);
         mAsyncShaderQueue.push_back({key, std::string(source), stage, sourceName ? sourceName : ""});
-        if (mAsyncShaderWorkers.empty()) {
-            mAsyncShaderStop = false;
-            // A preparation probe queues all of a frame's new shaders at once.
-            const unsigned cores = std::max(2U, std::thread::hardware_concurrency());
-            const unsigned workers = std::clamp(cores - 2U, 2U, 8U);
-            for (unsigned worker = 0; worker < workers; ++worker)
-                mAsyncShaderWorkers.emplace_back(&GfxRenderingAPIVulkan::AsyncShaderWorkerMain, this);
-        }
+        StartAsyncShaderWorkersLocked();
     }
     mAsyncShaderCondition.notify_one();
     std::fprintf(stderr, "TRIAEVUM_ASYNC_SHADER_QUEUED name=%s\n", sourceName ? sourceName : "");
     throw Oot3d::PicaShaderPending{};
+}
+
+namespace {
+// Async request key of the startup warm-up compiles: their result is dropped.
+constexpr uint64_t kWarmupShaderKey = 0U;
+} // namespace
+
+void GfxRenderingAPIVulkan::StartAsyncShaderWorkersLocked() {
+    if (!mAsyncShaderWorkers.empty()) return;
+    mAsyncShaderStop = false;
+    // A preparation probe queues all of a frame's new shaders at once.
+    const unsigned cores = std::max(2U, std::thread::hardware_concurrency());
+    const unsigned workers = std::clamp(cores - 2U, 2U, 8U);
+    for (unsigned worker = 0; worker < workers; ++worker)
+        mAsyncShaderWorkers.emplace_back(&GfxRenderingAPIVulkan::AsyncShaderWorkerMain, this);
+}
+
+void GfxRenderingAPIVulkan::WarmShaderCompiler() {
+    // The first compile of each stage builds glslang's built-in symbol tables
+    // (about 0.3 s in total). Do it on a worker while the game boots, not in
+    // the first frame that needs a new shader. Same GLSL version and options
+    // as the game's shaders; the results are dropped.
+    if (mShaderCompilerWarmed) return;
+    mShaderCompilerWarmed = true;
+    std::lock_guard lock(mAsyncShaderMutex);
+    mAsyncShaderQueue.push_back({kWarmupShaderKey, "#version 450\nvoid main() { gl_Position = vec4(0.0); }\n",
+                                 Renderer::SpirvStage::Vertex, "warmup.vert"});
+    mAsyncShaderQueue.push_back({kWarmupShaderKey,
+                                 "#version 450\nlayout(location = 0) out vec4 color;\nvoid main() { color = vec4(1.0); }\n",
+                                 Renderer::SpirvStage::Fragment, "warmup.frag"});
+    StartAsyncShaderWorkersLocked();
+    mAsyncShaderCondition.notify_all();
 }
 
 void GfxRenderingAPIVulkan::AsyncShaderWorkerMain() {
@@ -3801,6 +3827,7 @@ void GfxRenderingAPIVulkan::AsyncShaderWorkerMain() {
         } catch (const std::exception& exception) {
             result.Error = exception.what();
         }
+        if (request.Key == kWarmupShaderKey) continue;
         result.Source = std::move(request.Source);
         {
             std::lock_guard lock(mAsyncShaderMutex);
