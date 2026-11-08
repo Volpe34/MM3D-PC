@@ -1,6 +1,7 @@
 #include "fast/oot3d/linear_scene_color_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 #include "fast/oot3d/linear_scene_color.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
@@ -176,7 +177,7 @@ bool LinearSceneColorPass::Configure(
     return false;
 #else
     if (mImpl->Width != 0U &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS)
         return false;
     InvalidateScreenResources();
     try {

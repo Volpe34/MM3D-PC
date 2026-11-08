@@ -1,6 +1,7 @@
 #include "fast/oot3d/fidelityfx_sssr_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/normal_space_pass.h"
@@ -239,7 +240,7 @@ bool FidelityFxSssrPass::Configure(
     return false;
 #else
     if ((mImpl->ContextCreated || mImpl->Output.Image != VK_NULL_HANDLE) &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS) {
         mImpl->Reason = "FidelityFX SSSR resize wait failed";
         return false;
     }

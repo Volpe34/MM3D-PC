@@ -4,6 +4,7 @@
 #include "oot3d_cpu_phase_probe.h"
 #include "fast/renderer/frame_time_distribution.h"
 #include "fast/renderer/slow_frame_samples.h"
+#include "fast/renderer/hitch_log.h"
 #include "oot3d/renderer/azahar_texture_pack.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "oot3d_game_language_panel.h"
@@ -6173,7 +6174,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         // F9 drops a marker into the fling trace (TRIAEVUM_FLING_TRACE).
         static bool markKeyWasDown = false;
         const bool markKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F9);
-        if (markKeyDown && !markKeyWasDown) Oot3dNativeGame::FlingTraceMark();
+        if (markKeyDown && !markKeyWasDown) {
+          Oot3dNativeGame::FlingTraceMark();
+          Fast::Renderer::Hitch::Mark();  // and into MM3D_HITCH_LOG, to separate route passes
+        }
         markKeyWasDown = markKeyDown;
       }
       const bool overlayKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F4);
@@ -9062,6 +9066,24 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    (phaseTiming.GuestInsidePicaSubmitSeconds - nestedGuestBeforeFrame) * 1000.0,
                    ms(11), ms(7), ms(13), ms(14));
       previousFrameEnd = completedFrameTime;
+    }
+    if (Fast::Renderer::Hitch::Enabled()) {
+      static auto previousHitchFrameEnd = completedFrameTime;
+      const auto phases = phaseTiming.Values();
+      const auto ms = [&](size_t index) { return (phases[index] - phaseBeforeFrame[index]) * 1000.0; };
+      Fast::Renderer::Hitch::HostFrameTiming hitchTiming;
+      hitchTiming.HostFrame = presentationFrameCount;
+      hitchTiming.GuestFrame = frameCount;
+      hitchTiming.FrameMilliseconds =
+          std::chrono::duration<double, std::milli>(completedFrameTime - previousHitchFrameEnd).count();
+      hitchTiming.GuestMilliseconds = ms(0);
+      hitchTiming.RendererFrameStartMilliseconds = ms(4);
+      hitchTiming.PicaSubmitMilliseconds = ms(7);
+      hitchTiming.VisualPresentationMilliseconds = ms(11);
+      hitchTiming.PresentMilliseconds = ms(13);
+      hitchTiming.PacingWaitMilliseconds = ms(14);
+      Fast::Renderer::Hitch::EndHostFrame(hitchTiming);
+      previousHitchFrameEnd = completedFrameTime;
     }
     if (!benchmarkMeasurementStarted &&
         runFrameCount >= hostArgs.BenchmarkWarmupFrames) {

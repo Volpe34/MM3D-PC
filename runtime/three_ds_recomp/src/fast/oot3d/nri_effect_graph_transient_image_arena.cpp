@@ -1,6 +1,7 @@
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 
 #include <algorithm>
 #include <array>
@@ -211,7 +212,7 @@ bool NriEffectGraphTransientImageArena::Configure(
     }
 
     if (mImpl->SlotCount != 0U &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS) {
         for (size_t index = 0U; index < createdCount; ++index) {
             mImpl->Interop->DestroyOwnedTexture(newTextures[index].Image);
         }
@@ -303,7 +304,7 @@ NriEffectGraphTransientImageArena::Find(
 
 void NriEffectGraphTransientImageArena::InvalidateScreenResources() {
     if (mImpl->SlotCount != 0U && mImpl->Device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(mImpl->Device);
+        HITCH_DEVICE_WAIT_IDLE(mImpl->Device);
     }
     mImpl->DestroyTextures();
 }

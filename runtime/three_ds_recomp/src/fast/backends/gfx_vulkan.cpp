@@ -1,6 +1,8 @@
 #ifdef ENABLE_OOT3D_VULKAN
 
 #include "fast/backends/gfx_vulkan.h"
+#include "fast/renderer/hitch_log_vulkan.h"
+namespace HitchLog = ::Fast::Renderer::Hitch;
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
@@ -271,7 +273,7 @@ void GfxRenderingAPIVulkan::LoadShader(ShaderProgram* newPrg) {
 
 void GfxRenderingAPIVulkan::ClearShaderCache() {
     if (mDevice != VK_NULL_HANDLE) {
-        CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(clear shader cache)");
+        CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(clear shader cache)");
         DestroyGraphicsPipelines();
         for (auto& [key, shader] : mShaders) {
             if (shader.VertexShader != VK_NULL_HANDLE) {
@@ -508,7 +510,7 @@ bool GfxRenderingAPIVulkan::DrawTrianglesCached(uint64_t cacheId, uint64_t conte
                     return left.second.LastUsedFrame < right.second.LastUsedFrame;
                 });
             if (oldest != mOot3dCachedVertexBuffers.end()) {
-                CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(evict cached vertex buffer)");
+                CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(evict cached vertex buffer)");
                 for (auto& buffer : oldest->second.Buffers) {
                     DestroyBuffer(buffer);
                 }
@@ -1133,6 +1135,7 @@ void GfxRenderingAPIVulkan::Init() {
 }
 
 void GfxRenderingAPIVulkan::Shutdown() {
+    HitchLog::Shutdown();
     StopAsyncShaderWorkers();
     FinishNativePicaAotShaders();
     if (mInstance == VK_NULL_HANDLE) {
@@ -1141,7 +1144,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
     if (mDevice != VK_NULL_HANDLE) {
         WaitForAllPresents();
         StopPresentWorker();
-        vkDeviceWaitIdle(mDevice);
+        HITCH_DEVICE_WAIT_IDLE(mDevice);
         StorePipelineCache();
         ShutdownImGuiBackend();
         mSceneSurfaces.Clear();
@@ -1496,7 +1499,7 @@ bool GfxRenderingAPIVulkan::ApplyPresentationSettings(
     };
 
     WaitForAllPresents();
-    CheckVk(vkDeviceWaitIdle(mDevice),
+    CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
             "vkDeviceWaitIdle(OOT3D presentation settings)");
     try {
         apply(settings, mPresentationSettingsApplied);
@@ -1766,7 +1769,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
                 continue;
             }
             if (!waited) {
-                CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(texture pack generation)");
+                CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(texture pack generation)");
                 waited = true;
             }
             DestroyTexture(texture->second);
@@ -1783,8 +1786,16 @@ void GfxRenderingAPIVulkan::StartFrame() {
     if (mCustomTextureWaitThisFrame) {
         static const bool trace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
         const auto waitStart = std::chrono::steady_clock::now();
-        const size_t pending = trace ? azaharTexturePacks.Snapshot().PendingLoads : 0U;
+        const size_t pending =
+            trace || HitchLog::Enabled() ? azaharTexturePacks.Snapshot().PendingLoads : 0U;
         azaharTexturePacks.WaitForPendingLoadsFor(std::chrono::milliseconds(3000));
+        if (pending != 0U) {
+            // count = textures pending when the wait started
+            HitchLog::AddBlocking(HitchLog::Event::HdTextureWait,
+                          static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - waitStart).count()),
+                          0U, pending);
+        }
         if (trace && pending != 0U) {
             std::fprintf(stderr, "TEXWAIT frame %llu: %zu textures, %.1f ms\n",
                          static_cast<unsigned long long>(mFrameCounter), pending,
@@ -1910,7 +1921,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mSwapchainDirty = true;
     }
     markStart(0);
-    WaitForFramePresent(mCurrentFrame);
+    {
+        HitchLog::Scope hitch(HitchLog::Event::FrameFenceWait);
+        WaitForFramePresent(mCurrentFrame);
+    }
     markStart(1);
     const VkSampleCountFlagBits requestedSampleCount =
         aaPolicy.MsaaSamples >= 8U ? VK_SAMPLE_COUNT_8_BIT
@@ -1943,9 +1957,12 @@ void GfxRenderingAPIVulkan::StartFrame() {
     PrewarmNativePicaPipelines();
     markStart(2);
 
-    CheckVk(vkWaitForFences(mDevice, 1, &mInFlightFences[mCurrentFrame], VK_TRUE,
-                            std::numeric_limits<uint64_t>::max()),
-            "vkWaitForFences");
+    {
+        HitchLog::Scope hitch(HitchLog::Event::FrameFenceWait);
+        CheckVk(vkWaitForFences(mDevice, 1, &mInFlightFences[mCurrentFrame], VK_TRUE,
+                                std::numeric_limits<uint64_t>::max()),
+                "vkWaitForFences");
+    }
     markStart(3);
     // A fence handle is reused for another submission below. Retire all image
     // references to its completed submission before resetting it; otherwise a
@@ -1969,6 +1986,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - clockStart).count());
         if (unusedSeconds > 0 && mTextureClockSeconds != mTextureEvictionCheckedSecond) {
             mTextureEvictionCheckedSecond = mTextureClockSeconds;
+            const uint64_t evictStart = HitchLog::Enabled() ? HitchLog::NowNanoseconds() : 0U;
             size_t evicted = 0;
             for (auto texture = mNativePicaTextures.begin(); texture != mNativePicaTextures.end();) {
                 const auto& record = texture->second;
@@ -1981,6 +1999,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
                 texture = mNativePicaTextures.erase(texture);
                 ++evicted;
             }
+            if (evicted != 0U)
+                HitchLog::AddBlocking(HitchLog::Event::TextureEvict, HitchLog::NowNanoseconds() - evictStart, 0U,
+                                      evicted);
             static const bool trace = std::getenv("TRIAEVUM_TEXTURE_TRACE") != nullptr;
             if (trace && evicted != 0U)
                 std::fprintf(stderr, "TRIAEVUM_TEXTURE_EVICT second=%u evicted=%zu kept=%zu\n", mTextureClockSeconds,
@@ -1995,6 +2016,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     markStart(4);
     bool nriAcquire = false;
     VkResult acquire = VK_NOT_READY;
+    const uint64_t acquireStart = HitchLog::Enabled() ? HitchLog::NowNanoseconds() : 0U;
     for (;;) {
         if (mNriSwapchain.Active()) {
             const auto result =
@@ -2031,6 +2053,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
         }
         break;
     }
+    if (HitchLog::Enabled())
+        HitchLog::AddBlocking(HitchLog::Event::SwapchainAcquire, HitchLog::NowNanoseconds() - acquireStart);
     if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
         CheckVk(acquire, "vkAcquireNextImageKHR");
     }
@@ -2063,6 +2087,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
                                                Oot3d::WindowMode::ExclusiveFullscreen});
 
     if (mImagesInFlight[mCurrentImage] != VK_NULL_HANDLE) {
+        HitchLog::Scope hitch(HitchLog::Event::FrameFenceWait);
         CheckVk(vkWaitForFences(mDevice, 1, &mImagesInFlight[mCurrentImage], VK_TRUE,
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences(image)");
@@ -2339,7 +2364,7 @@ bool GfxRenderingAPIVulkan::UpdateFramebufferParametersWithColorFormat(
                                 std::numeric_limits<uint64_t>::max()),
                 "vkWaitForFences(recreate OOT3D Shadow2D framebuffer)");
     } else {
-        CheckVk(vkDeviceWaitIdle(mDevice),
+        CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice),
                 "vkDeviceWaitIdle(recreate OOT3D Shadow2D framebuffer)");
     }
     DestroyOffscreenFramebuffer(framebuffer);
@@ -2602,7 +2627,7 @@ void GfxRenderingAPIVulkan::DeleteTexture(uint32_t texId) {
         return;
     }
     if (mDevice != VK_NULL_HANDLE) {
-        CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(delete texture)");
+        CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(delete texture)");
         DestroyTexture(it->second);
     }
     mTextures.erase(it);
@@ -3406,10 +3431,12 @@ std::vector<uint32_t> GfxRenderingAPIVulkan::CompileShaderSpirv(
         return {artifact.begin(), artifact.end()};
     }
     const auto failures = mCompiledShaderCache.Stats().WriteFailures;
+    HitchLog::Scope resolveHitch(HitchLog::Event::SpirvResolve);
     auto spirv = mCompiledShaderCache.Resolve(source, stage, [&] {
         if (mPicaEffectiveShaderInventory.Enabled())
             std::fprintf(stderr, "TRIAEVUM_RUNTIME_SHADER_COMPILE stage=%s name=%s\n",
                          vertexShader ? "vertex" : "fragment", sourceName);
+        HitchLog::Scope compileHitch(HitchLog::Event::ShaderCompile);
         return Renderer::CompileShadercSpirv(source, stage, sourceName);
     });
     if (failures == 0 && mCompiledShaderCache.Stats().WriteFailures != 0)
@@ -3647,6 +3674,7 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
         }
         const auto identity = Renderer3ds::IdentifyPicaShaderSource(source);
         const auto stageName = Oot3d::PicaAotShaderStageName(stage);
+        HitchLog::Count(HitchLog::Event::FragmentArtifactMiss);
         std::fprintf(stderr, "TRIAEVUM_FRAGMENT_ARTIFACT_MISS stage=%.*s source=%llu bytes=%zu\n",
                      static_cast<int>(stageName.size()), stageName.data(),
                      static_cast<unsigned long long>(identity.Id), source.size());
@@ -3661,6 +3689,7 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
     }
 
     ++mPicaAotShaderMisses;
+    HitchLog::Count(HitchLog::Event::AotShaderMiss);
     const auto identity = Oot3d::IdentifyPicaAotShaderSource(source);
     if (mPicaAotShaderMissesLogged.insert({stage, identity.Id}).second) {
         SPDLOG_WARN(
@@ -3704,7 +3733,7 @@ std::vector<uint32_t> GfxRenderingAPIVulkan::CompileShaderSpirvInScope(
             throw Oot3d::PicaShaderPending{};
     }
     std::vector<uint32_t> cached;
-    if (mCompiledShaderCache.TryLoad(source, stage, cached))
+    if (HitchLog::Scope loadHitch(HitchLog::Event::SpirvResolve); mCompiledShaderCache.TryLoad(source, stage, cached))
         return cached;
     {
         std::lock_guard lock(mAsyncShaderMutex);
@@ -3733,6 +3762,7 @@ void GfxRenderingAPIVulkan::AsyncShaderWorkerMain() {
         }
         AsyncShaderResult result;
         try {
+            HitchLog::Scope compileHitch(HitchLog::Event::ShaderCompileWorker);
             result.Words = Renderer::CompileShadercSpirv(request.Source, request.Stage, request.Name.c_str());
         } catch (const std::exception& exception) {
             result.Error = exception.what();
@@ -4255,7 +4285,7 @@ void GfxRenderingAPIVulkan::EndImmediateCommands(VkCommandBuffer commandBuffer) 
     submitInfo.pCommandBuffers = &commandBuffer;
     CheckVk(vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE),
             "vkQueueSubmit(immediate)");
-    CheckVk(vkQueueWaitIdle(mGraphicsQueue), "vkQueueWaitIdle(immediate)");
+    CheckVk(HITCH_QUEUE_WAIT_IDLE(mGraphicsQueue), "vkQueueWaitIdle(immediate)");
     vkFreeCommandBuffers(mDevice, mCommandPool, 1, &commandBuffer);
 }
 
@@ -4371,7 +4401,7 @@ void GfxRenderingAPIVulkan::CreateTextureImage(TextureRecord& texture,
                                                 const uint8_t* rgba32Buf, uint32_t width,
                                                 uint32_t height) {
     if (texture.Uploaded) {
-        CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(replace texture)");
+        CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(replace texture)");
         DestroyTexture(texture);
     }
     texture.Width = width;
@@ -4426,6 +4456,7 @@ void GfxRenderingAPIVulkan::RecreateSampler(TextureRecord& texture) {
     if (!texture.Uploaded && texture.Image == VK_NULL_HANDLE) {
         return;
     }
+    HitchLog::Scope hitch(HitchLog::Event::SamplerCreate);
     if (texture.Sampler != VK_NULL_HANDLE) {
         mRetiredSamplers.push_back(texture.Sampler);
     }
@@ -5064,7 +5095,7 @@ void GfxRenderingAPIVulkan::RecreateSwapchain() {
     }
     WaitForAllPresents();
     StopPresentWorker();
-    CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(recreate swapchain)");
+    CheckVk(HITCH_DEVICE_WAIT_IDLE(mDevice), "vkDeviceWaitIdle(recreate swapchain)");
     // Native PICA targets are offscreen scene resources, not swapchain
     // resources. Preserve them (and CACAO's depth bindings) across presentation
     // mode changes; their own reset path handles genuine scene invalidation.

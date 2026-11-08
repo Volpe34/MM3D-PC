@@ -1,6 +1,7 @@
 #include "fast/oot3d/temporal_aa_pass.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer/hitch_log_vulkan.h"
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/resource_state_tracker.h"
 #include "fast/oot3d/temporal_aa.h"
@@ -155,7 +156,7 @@ bool TemporalAaPass::Configure(uint32_t width, uint32_t height) {
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->Width != 0U && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0U && HITCH_DEVICE_WAIT_IDLE(mImpl->Device) != VK_SUCCESS)
         return false;
     InvalidateScreenResources();
     try {

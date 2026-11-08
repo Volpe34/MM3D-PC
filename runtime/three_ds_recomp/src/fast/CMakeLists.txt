@@ -58,9 +58,12 @@ set(Source_Files__RendererExtensions
     renderer/extension_resource_graph.cpp
     renderer/extension_scene_publication.cpp
     renderer/extension_schedule.cpp
+    renderer/hitch_log.cpp
 )
 add_library(renderer_extension_core STATIC
     ${Source_Files__RendererExtensions})
+find_package(Threads REQUIRED)
+target_link_libraries(renderer_extension_core PUBLIC Threads::Threads)
 add_library(ThreeDsRecomp::RendererExtensionCore ALIAS
     renderer_extension_core)
 set_property(TARGET renderer_extension_core PROPERTY CXX_STANDARD 20)
