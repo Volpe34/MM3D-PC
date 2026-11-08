@@ -1985,7 +1985,12 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mTextureClockSeconds = static_cast<uint32_t>(
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - clockStart).count());
         if (unusedSeconds > 0 && mTextureClockSeconds != mTextureEvictionCheckedSecond) {
-            mTextureEvictionCheckedSecond = mTextureClockSeconds;
+            // Leaving an area retires its textures together: each one frees
+            // its own memory, and a whole area's worth took up to 100 ms in
+            // one frame. At most kEvictionsPerFrame go per frame; an
+            // unfinished pass continues in the next frame.
+            constexpr size_t kEvictionsPerFrame = 16U;
+            bool passComplete = true;
             const uint64_t evictStart = HitchLog::Enabled() ? HitchLog::NowNanoseconds() : 0U;
             size_t evicted = 0;
             for (auto texture = mNativePicaTextures.begin(); texture != mNativePicaTextures.end();) {
@@ -1995,10 +2000,15 @@ void GfxRenderingAPIVulkan::StartFrame() {
                     ++texture;
                     continue;
                 }
+                if (evicted == kEvictionsPerFrame) {
+                    passComplete = false;
+                    break;
+                }
                 DestroyTexture(texture->second);
                 texture = mNativePicaTextures.erase(texture);
                 ++evicted;
             }
+            if (passComplete) mTextureEvictionCheckedSecond = mTextureClockSeconds;
             if (evicted != 0U)
                 HitchLog::AddBlocking(HitchLog::Event::TextureEvict, HitchLog::NowNanoseconds() - evictStart, 0U,
                                       evicted);
