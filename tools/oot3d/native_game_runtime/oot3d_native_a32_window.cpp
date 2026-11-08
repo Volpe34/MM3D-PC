@@ -5094,6 +5094,18 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }();
         static size_t nextWarp = 0;
         static auto lastWarp = std::chrono::steady_clock::now();
+        // TRIAEVUM_WARP_FRAMES=<n>: warp every n passes here instead of by
+        // wall clock, so runs with --fixed-delta-seconds repeat exactly
+        // (framebuffer comparisons between builds).
+        static const long warpFrames = [] {
+          const char *value = std::getenv("TRIAEVUM_WARP_FRAMES");
+          return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+        }();
+        static long warpTicks = 0;
+        ++warpTicks;
+        const bool warpDue = warpFrames > 0
+            ? warpTicks >= warpFrames
+            : std::chrono::duration<double>(std::chrono::steady_clock::now() - lastWarp).count() >= warpSeconds;
         auto &memory = process.Memory();
         uint32_t context = 0, game = 0, type = 0;
         if (std::getenv("TRIAEVUM_PLAYER_DEBUG")) {
@@ -5118,8 +5130,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           memory.Read32(0x0072F5C0U, &c); if (c) memory.Read32(c + 0x16CU, &g); if (g) memory.Read32(g + 0x13CU, &t);
           std::fprintf(stderr, "TRIAEVUM_WARP_DEBUG context=%08X game=%08X type=%08X\n", c, g, t);
         }
-        if (nextWarp < warpEntrances.size() &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - lastWarp).count() >= warpSeconds &&
+        if (nextWarp < warpEntrances.size() && warpDue &&
             memory.Read32(0x0072F5C0U, &context) && context >= 0x100000U &&
             memory.Read32(context + 0x16CU, &game) && game >= 0x100000U && (game & 3U) == 0U &&
             memory.Read32(game + 0x13CU, &type) && ((type >> 8U) & 0xFFU) == 4U) {
@@ -5141,6 +5152,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                                   .count()));
           ++nextWarp;
           lastWarp = std::chrono::steady_clock::now();
+          warpTicks = 0;
         }
       }
     }
