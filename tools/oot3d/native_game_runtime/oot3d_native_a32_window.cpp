@@ -4477,7 +4477,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     window.SetTargetFps(0);
   }
   auto &api = GetActiveRenderingApiForDemo(window);
-  if (launch.PicaParametricTev) {
+  if (launch.PicaParametricTev && !foreignTitle) {
     if (auto* preparation = dynamic_cast<Fast::Renderer3ds::PicaProgramPreparationBackend*>(&api))
       preparation->PrepareNativePicaPrograms(Oot3dNativeGame::NativePicaVertexProgramFamily());
   }
@@ -4545,6 +4545,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   shaderSourceCache.TevMode = launch.PicaParametricTev
       ? Oot3dNativeGame::Oot3dPicaTevMode::Parametric
       : Oot3dNativeGame::Oot3dPicaTevMode::Specialized;
+  shaderSourceCache.RequireTranslatedVertexPrograms = !foreignTitle;
   Oot3dNativeGame::Oot3dPicaSemanticTraceWriter picaSemanticTrace(
       launch.PicaSemanticTracePath);
   picaSemanticTrace.BeginSession(
