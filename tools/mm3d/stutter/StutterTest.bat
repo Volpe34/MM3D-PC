@@ -44,7 +44,7 @@ if exist data\shader_corpus\mm3d.o3ps if exist data\shader_corpus\all_pipelines.
 if not exist data\shader_corpus\runs mkdir data\shader_corpus\runs
 set RUN=%RANDOM%%RANDOM%
 echo Recording %OUT%.log  (F9 = marker; close the game normally when done)
-TriAevum.exe --title-plugin private\mm3d_title_aot.dll --a32-process-manifest process-manifest.json ^
+"%~dp0TriAevum.exe" --title-plugin private\mm3d_title_aot.dll --a32-process-manifest process-manifest.json ^
   --resource-root resources --renderer nri --ui-profile oot3d --config data\config\TriAevum.stutter.json ^
   --gameplay-timing native30_interpolated --presentation-rate 60 --save-data data\savedata ^
   --width 1280 --height 720 ^

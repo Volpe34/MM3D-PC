@@ -278,6 +278,9 @@ def main():
         return 2
     results = []
     for path in paths:
+        if not Path(path).is_file():
+            print(f"== {path}: no log (the game did not start, or MM3D_HITCH_LOG was not set)")
+            continue
         result = describe(path)
         if result:
             results.append((Path(path).name, result))
