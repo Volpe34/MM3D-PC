@@ -8,32 +8,40 @@ copy a StutterTest.bat run uses. The player's own settings file is only read.
             button-style overlay still loads)
   preload   "Preload custom textures" on with Texture memory 8192 MB
   asyncall  unchanged settings (StutterTest.bat sets TRIAEVUM_ASYNC_ALL_SHADERS=1)
+  guestthread  F1 "game logic thread" on (Graphics.Presentation.GuestThread)
+
+Configurations combine with '+', e.g. nowait+guestthread.
 """
 import json
 import sys
 from pathlib import Path
 
-CONFIGS = ("asis", "nowait", "nohd", "preload", "asyncall")
+CONFIGS = ("asis", "nowait", "nohd", "preload", "asyncall", "guestthread")
 
 
 def main() -> int:
-    if len(sys.argv) != 4 or sys.argv[1] not in CONFIGS:
+    configs = sys.argv[1].split("+") if len(sys.argv) == 4 else []
+    if not configs or any(config not in CONFIGS for config in configs):
         print(__doc__)
         return 2
     config, source, output = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
     settings = json.loads(source.read_text(encoding="utf-8"))
-    azahar = settings.setdefault("Graphics", {}).setdefault("TexturePacks", {}).setdefault("Azahar", {})
-    if config == "nowait":
+    graphics = settings.setdefault("Graphics", {})
+    azahar = graphics.setdefault("TexturePacks", {}).setdefault("Azahar", {})
+    if "nowait" in configs:
         azahar["WaitForCustomTextures"] = False
-    elif config == "nohd":
+    if "nohd" in configs:
         azahar["LoadDirectory"] = "data/textures_off"
-    elif config == "preload":
+    if "preload" in configs:
         azahar["PreloadCustomTextures"] = True
         azahar["TextureMemoryMB"] = max(8192, int(azahar.get("TextureMemoryMB", 0)))
+    if "guestthread" in configs:
+        graphics.setdefault("Presentation", {})["GuestThread"] = True
     output.write_text(json.dumps(settings, indent=4) + "\n", encoding="utf-8")
     print(f"{config}: Load={azahar.get('LoadCustomTextures')} Wait={azahar.get('WaitForCustomTextures')} "
           f"Preload={azahar.get('PreloadCustomTextures')} TextureMemoryMB={azahar.get('TextureMemoryMB')} "
-          f"LoadDirectory={azahar.get('LoadDirectory')}")
+          f"LoadDirectory={azahar.get('LoadDirectory')} "
+          f"GuestThread={graphics.get('Presentation', {}).get('GuestThread')}")
     return 0
 
 

@@ -51,7 +51,7 @@ def main() -> int:
     parser.add_argument("--install", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--label", default="run")
-    parser.add_argument("--config", default="asis", choices=("asis", "nowait", "nohd", "preload"))
+    parser.add_argument("--config", default="asis", help="stutter_config.py configuration(s), e.g. nowait+guestthread")
     parser.add_argument("--seconds", type=float, default=10.0, help="seconds in each area")
     parser.add_argument("--entrances", default="", help="comma-separated entrance list (default: 15 main areas)")
     parser.add_argument("--cold-cache", action="store_true", help="empty SPIR-V/pipeline cache directory")

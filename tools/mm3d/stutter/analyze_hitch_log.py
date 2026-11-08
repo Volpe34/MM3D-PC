@@ -290,7 +290,9 @@ def main():
             continue
         result = describe(path)
         if result:
-            results.append((Path(path).name, result))
+            # autotour writes <label>/hitch.log: name runs by their folder.
+            name = Path(path).parent.name if Path(path).name == "hitch.log" else Path(path).stem
+            results.append((name, result))
         print()
     if len(results) > 1:
         print("== comparison")

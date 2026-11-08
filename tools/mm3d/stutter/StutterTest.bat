@@ -1,6 +1,7 @@
 @echo off
 rem StutterTest.bat <config> [tag]: Play.bat with the frame-hitch log (MM3D_HITCH_LOG) on.
-rem   config: asis (default) | nowait | nohd | preload | asyncall   (see tools\stutter\stutter_config.py)
+rem   config: asis (default) | nowait | nohd | preload | asyncall | guestthread, combined with +
+rem           (e.g. nowait+guestthread; see tools\stutter\stutter_config.py)
 rem   tag:    optional name for this run, e.g. s1 / s2 for the first / second session.
 rem The run uses a copy of your settings (data\config\TriAevum.stutter.json): data\config\TriAevum.json
 rem is not changed, and settings changed in F1 during the run only go to the copy.
@@ -31,7 +32,7 @@ copy /y data\config\TriAevum.stutter.json "%OUT%.config.json" >nul
 set MM3D_HITCH_LOG=1
 set MM3D_HITCH_LOG_FILE=%OUT%.log
 set TRIAEVUM_ASYNC_ALL_SHADERS=
-if /i "%CONFIG%"=="asyncall" set TRIAEVUM_ASYNC_ALL_SHADERS=1
+echo %CONFIG% | findstr /i "asyncall" >nul && set TRIAEVUM_ASYNC_ALL_SHADERS=1
 set TRIAEVUM_LOG_FILE=%OUT%.run.log
 set TRIAEVUM_CRASH_DIR=%~dp0logs
 set TRIAEVUM_REPORT_TITLE=MM3D
