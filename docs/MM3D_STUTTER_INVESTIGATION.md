@@ -180,9 +180,12 @@ pack tests. The 7 others fail identically on unmodified `fc4d8f6` (two test
 targets do not link, the cross-title token check, a grass placement test, a GPU
 LOD test, an SDL segfault). Host-side tests for the changed code: draw plan,
 draw bridge and visual savestate tests pass; the PICA submission test and the
-CTR host test fail identically on `fc4d8f6`. Linux was not built here (no Linux environment);
-the new code is standard C++20 plus Vulkan, and the Vulkan-only includes sit
-inside the existing `ENABLE_OOT3D_VULKAN` guards.
+CTR host test fail identically on `fc4d8f6`.
+
+**Linux.** `TriAevum` builds on Ubuntu 24.04 with clang 18 (the configure
+arguments of `scripts/build-linux-runtime.sh`, upscaler SDKs off): 599/599
+steps, no errors, at `5b8bd9a`. The draw plan, draw bridge and visual savestate
+tests pass there too. Reproduce with `tools/mm3d/stutter/linux/` (Docker).
 
 ## 6. Remaining hitches and next steps
 
