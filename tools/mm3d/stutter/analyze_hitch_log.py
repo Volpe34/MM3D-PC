@@ -37,6 +37,8 @@ CAUSES = OrderedDict([
     ("draw_variant", "Shader variant selection"),
     ("draw_shader", "Shader program lookup (excl. SPIR-V)"),
     ("draw_other", "Other per-draw work"),
+    ("probe_draw", "Preparation probe (new draws)"),
+    ("probe_wait", "Wait for shaders compiled in parallel"),
     ("grass", "Interactive grass"),
     ("shadow", "Directional shadow map"),
     ("fence_wait", "Frame fence / present wait (GPU)"),
@@ -106,7 +108,12 @@ def split_causes(fields):
     staged = sum(m(name) for name in ("d_variant", "d_shader", "d_texture", "d_grass_surface", "d_target",
                                       "d_reflection", "d_temporal", "d_pipeline", "d_upload", "d_descriptor",
                                       "d_command"))
-    causes["draw_other"] = max(0.0, m("draw") - staged - m("grass") - m("shadow"))
+    # Probed draws run inside "draw" too (probe_draw); their shader-cache
+    # reads are in spirv_io and their waits in probe_wait.
+    probe = m("probe_draw")
+    causes["probe_draw"] = max(0.0, probe - min(probe, m("spirv")))
+    causes["probe_wait"] = m("probe_wait")
+    causes["draw_other"] = max(0.0, m("draw") - staged - m("grass") - m("shadow") - probe - m("probe_wait"))
     causes["grass"] = m("grass")
     causes["shadow"] = m("shadow")
     causes["fence_wait"] = m("fence_wait")

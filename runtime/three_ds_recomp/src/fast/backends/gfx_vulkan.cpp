@@ -3709,15 +3709,36 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
 std::vector<uint32_t> GfxRenderingAPIVulkan::CompileShaderSpirvInScope(
     std::string_view source, bool vertexShader, const char* sourceName) {
     static const bool synchronous = std::getenv("TRIAEVUM_SYNC_SHADERS") != nullptr;
+    const auto stage = vertexShader ? Renderer::SpirvStage::Vertex : Renderer::SpirvStage::Fragment;
+    const auto asyncKey = [&] {
+        const auto identity = Oot3d::IdentifyPicaAotShaderSource(source);
+        return (identity.Id ^ (identity.SecondaryHash * 0x9E3779B97F4A7C15ULL)) + static_cast<uint64_t>(stage);
+    };
     if (!mAsyncShaderScope || synchronous) {
+        if (!synchronous) {
+            // A preparation probe (or an effect draw) may already be compiling
+            // this shader on a worker: wait for that result instead of
+            // compiling it a second time.
+            const uint64_t key = asyncKey();
+            std::unique_lock lock(mAsyncShaderMutex);
+            if (mAsyncShaderPending.contains(key)) {
+                HitchLog::Scope waitHitch(HitchLog::Event::ShaderProbeWait);
+                mAsyncShaderDone.wait(lock, [&] { return !mAsyncShaderPending.contains(key) || mAsyncShaderStop; });
+            }
+            if (const auto done = mAsyncShaderResults.find(key);
+                done != mAsyncShaderResults.end() && done->second.Source == source && done->second.Error.empty()) {
+                auto words = std::move(done->second.Words);
+                mAsyncShaderResults.erase(done);
+                lock.unlock();
+                mCompiledShaderCache.StoreCompiled(source, stage, words);
+                return words;
+            }
+        }
         return CompileShaderSpirv(std::string(source), vertexShader, sourceName);
     }
-    const auto stage = vertexShader ? Renderer::SpirvStage::Vertex : Renderer::SpirvStage::Fragment;
     if (const auto artifact = Renderer::FindBuiltinPassShaderSpirv(source, stage, {}, 1); !artifact.empty())
         return {artifact.begin(), artifact.end()};
-    const auto identity = Oot3d::IdentifyPicaAotShaderSource(source);
-    const uint64_t key = (identity.Id ^ (identity.SecondaryHash * 0x9E3779B97F4A7C15ULL)) +
-                         static_cast<uint64_t>(stage);
+    const uint64_t key = asyncKey();
     {
         std::lock_guard lock(mAsyncShaderMutex);
         if (const auto done = mAsyncShaderResults.find(key);
@@ -3741,7 +3762,10 @@ std::vector<uint32_t> GfxRenderingAPIVulkan::CompileShaderSpirvInScope(
         mAsyncShaderQueue.push_back({key, std::string(source), stage, sourceName ? sourceName : ""});
         if (mAsyncShaderWorkers.empty()) {
             mAsyncShaderStop = false;
-            for (int worker = 0; worker < 2; ++worker)
+            // A preparation probe queues all of a frame's new shaders at once.
+            const unsigned cores = std::max(2U, std::thread::hardware_concurrency());
+            const unsigned workers = std::clamp(cores - 2U, 2U, 8U);
+            for (unsigned worker = 0; worker < workers; ++worker)
                 mAsyncShaderWorkers.emplace_back(&GfxRenderingAPIVulkan::AsyncShaderWorkerMain, this);
         }
     }
@@ -3768,9 +3792,12 @@ void GfxRenderingAPIVulkan::AsyncShaderWorkerMain() {
             result.Error = exception.what();
         }
         result.Source = std::move(request.Source);
-        std::lock_guard lock(mAsyncShaderMutex);
-        mAsyncShaderPending.erase(request.Key);
-        mAsyncShaderResults[request.Key] = std::move(result);
+        {
+            std::lock_guard lock(mAsyncShaderMutex);
+            mAsyncShaderPending.erase(request.Key);
+            mAsyncShaderResults[request.Key] = std::move(result);
+        }
+        mAsyncShaderDone.notify_all();
     }
 }
 
@@ -3780,6 +3807,7 @@ void GfxRenderingAPIVulkan::StopAsyncShaderWorkers() {
         mAsyncShaderStop = true;
     }
     mAsyncShaderCondition.notify_all();
+    mAsyncShaderDone.notify_all();
     for (auto& worker : mAsyncShaderWorkers) worker.join();
     mAsyncShaderWorkers.clear();
 }

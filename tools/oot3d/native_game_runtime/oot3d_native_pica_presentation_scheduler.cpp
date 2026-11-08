@@ -206,6 +206,47 @@ bool Oot3dPicaPresentationScheduler::Execute(
   }
   mStats.InterpolatedDraws += sample.InterpolatedDraws;
 
+  // Draws whose pipeline/shader identity is new: the backend starts all of
+  // their missing shader and pipeline builds at once (in parallel, see
+  // PicaRenderBackend::BeginPicaDrawProbe) before the frame is replayed, so a
+  // new area's materials do not compile one after another mid-frame. Up to
+  // three rounds: vertex shader, then fragment shader, then pipeline.
+  mProbeScratch.clear();
+  for (const auto &drawView : sample.Draws) {
+    const auto &draw = *drawView.BasePlan;
+    uint64_t key = draw.CanonicalIdentity.PipelineId;
+    for (const uint64_t part :
+         {draw.VertexShader.StateKey, draw.FragmentShader.StateKey,
+          uint64_t{draw.State.Framebuffer.ColorFormat} |
+              (uint64_t{draw.State.Framebuffer.DepthFormat} << 8U)})
+      key = (key ^ part) * 0x100000001b3ULL + (key >> 29U);
+    if (mPreparedDrawKeys.insert(key).second) {
+      mProbeScratch.push_back(&drawView);
+    }
+  }
+  if (mPreparedDrawKeys.size() > 1000000U) {
+    mPreparedDrawKeys.clear();
+  }
+  for (int round = 0; round < 3 && !mProbeScratch.empty() &&
+                      backend.BeginPicaDrawProbe();
+       ++round) {
+    mProbeRetryScratch.clear();
+    for (const auto *drawView : mProbeScratch) {
+      const auto overrides = drawView->Overrides();
+      std::string ignored;
+      (void)SubmitOot3dPicaVulkanDrawPlan(backend, *drawView->BasePlan,
+                                          &ignored, renderTargetNamespace,
+                                          &overrides, nullptr);
+      if (backend.PicaDrawProbeNeedsAnotherRound()) {
+        mProbeRetryScratch.push_back(drawView);
+      }
+    }
+    if (!backend.EndPicaDrawProbe()) {
+      break;
+    }
+    std::swap(mProbeScratch, mProbeRetryScratch);
+  }
+
   size_t fillIndex = 0;
   size_t transferIndex = 0;
   bool topSnapshotExecuted = false;

@@ -4169,8 +4169,36 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
     }
 }
 
+bool GfxRenderingAPIVulkan::BeginPicaDrawProbe() {
+    if (!mFrameActive || mPicaDrawProbe) return false;
+    mPicaDrawProbe = true;
+    mPicaDrawProbeQueuedShaders = false;
+    return true;
+}
+
+bool GfxRenderingAPIVulkan::EndPicaDrawProbe() {
+    if (!mPicaDrawProbe) return false;
+    mPicaDrawProbe = false;
+    if (!mPicaDrawProbeQueuedShaders) return false;
+    mPicaDrawProbeQueuedShaders = false;
+    // The frame needs these now: wait for them here, compiled in parallel,
+    // rather than one by one as its draws reach them.
+    HitchLog::Scope waitHitch(HitchLog::Event::ShaderProbeWait);
+    std::unique_lock lock(mAsyncShaderMutex);
+    mAsyncShaderDone.wait(lock, [&] { return mAsyncShaderPending.empty() || mAsyncShaderStop; });
+    return true;
+}
+
 bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     const GfxNativePicaDrawView& draw, std::string* error) {
+    if (mPicaDrawProbe) {
+        // Preparation only (BeginPicaDrawProbe): no HUD copies, no schedule.
+        mPicaDrawProbeDrawQueued = false;
+        HitchLog::Scope probeHitch(HitchLog::Event::ProbeDraw);
+        std::string ignored;
+        (void)SubmitPicaDrawImpl(draw, &ignored);
+        return true;
+    }
     if (EnvSet_TRIAEVUM_VP_DEBUG()) {
         std::fprintf(stderr, "[vp] f%llu fb %08x vp %.0f,%.0f %.0fx%.0f tex %08x %ux%u hash %016llx\n",
                      static_cast<unsigned long long>(mFrameCounter),
@@ -4421,7 +4449,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                 draw.FramebufferColorFormat,
                 draw.FramebufferDepthFormat,
             };
-        if (mNativePicaCompositionSchedule.Valid() && !mHudLayerDrawing) {
+        if (mNativePicaCompositionSchedule.Valid() && !mHudLayerDrawing && !mPicaDrawProbe) {
             std::string scheduleError;
             const bool matched =
                 mNativePicaCompositionSchedule.ConsumeDraw(
@@ -4432,9 +4460,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
                 throw std::runtime_error(scheduleError);
             }
         }
-        for (const auto& texture : draw.Textures)
-            NoteTargetTexture(mFrameCounter, draw.FramebufferColorPhysicalAddress,
-                              texture.Width, texture.Height, texture.NativeContentHash);
+        if (!mPicaDrawProbe)
+            for (const auto& texture : draw.Textures)
+                NoteTargetTexture(mFrameCounter, draw.FramebufferColorPhysicalAddress,
+                                  texture.Width, texture.Height, texture.NativeContentHash);
         const bool sceneDraw =
             draw.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene;
@@ -4784,7 +4813,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             : mInstrumentedNativePicaShaders;
         auto shaderIt = nativeShaderCache.find(shaderKey);
         if (shaderIt == nativeShaderCache.end()) try {
-            mAsyncShaderScope = ShaderBuildMaySkipDraw(draw);
+            mAsyncShaderScope = mPicaDrawProbe || ShaderBuildMaySkipDraw(draw);
             struct ScopeReset {
                 bool& Flag;
                 ~ScopeReset() { Flag = false; }
@@ -4849,6 +4878,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             }
             shaderIt = nativeShaderCache.emplace(shaderKey, std::move(shader)).first;
         } catch (const Oot3d::PicaShaderPending&) {
+            if (mPicaDrawProbe) {
+                mPicaDrawProbeQueuedShaders = true;
+                mPicaDrawProbeDrawQueued = true;
+                return true;
+            }
             // Compiling in the background: skip this draw rather than stall.
             // Its target must still exist for the display transfers that read it.
             (void)GetOrCreateNativePicaRenderTarget(draw);
@@ -4861,6 +4895,22 @@ bool GfxRenderingAPIVulkan::SubmitPicaDrawImpl(
             shaderIt->second.NriDescriptorContract,
             mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
+        if (mPicaDrawProbe) {
+            // The shaders exist: start the draw's main pipeline on a worker.
+            try {
+                mAsyncShaderScope = true;
+                struct ScopeReset {
+                    bool& Flag;
+                    ~ScopeReset() { Flag = false; }
+                } scopeReset{mAsyncShaderScope};
+                (void)GetOrCreateNativePicaPipeline(
+                    effectiveDraw, shaderIt->second, shaderVariant.Reactive,
+                    shaderVariant.Domain, shaderVariant.RequestedFeatures,
+                    shaderVariant.AppliedFeatures);
+            } catch (const Oot3d::PicaShaderPending&) {
+            }
+            return true;
+        }
 
         std::array<TextureRecord*, 3> textures{
             &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};

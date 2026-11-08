@@ -17,7 +17,7 @@ namespace {
 constexpr const char* kEventNames[] = {
     "hd_wait",      "spirv",        "shader_compile", "shader_compile_worker", "aot_miss",
     "artifact_miss", "async_skip",  "pipe_uncached",  "pipe_create",           "pipe_create_worker",
-    "pipe_async_wait", "pipe_prewarm", "tex_create",            "tex_decode",
+    "pipe_async_wait", "probe_wait",   "probe_draw",   "pipe_prewarm", "tex_create",            "tex_decode",
     "tex_hash",     "tex_hd_resolve", "tex_grass",    "tex_image",             "tex_alloc",
     "hd_image",     "upload_buffer", "sampler",       "tex_evict",             "idle_wait",
     "raw_copy",     "fence_wait",   "acquire",        "file_read",             "grass",

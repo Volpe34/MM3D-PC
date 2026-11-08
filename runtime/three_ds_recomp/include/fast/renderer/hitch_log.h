@@ -34,6 +34,8 @@ enum class Event : uint8_t {
     PipelineCreate,        // nested: driver pipeline creation on the render thread
     PipelineCreateWorker,  // off-thread: async pipeline workers
     PipelineAsyncWait,     // nested: render thread waits for a worker-built pipeline
+    ShaderProbeWait,       // preparation probe: waits for a frame's shaders compiled in parallel
+    ProbeDraw,             // preparation probe: one new draw resolved without recording
     PipelinePrewarm,       // StartFrame prewarm pass (startup/profile change)
     TextureCreate,         // a new native PICA texture (incl. everything below)
     TextureDecode,         // nested: PICA decode of the mip chain

@@ -314,6 +314,19 @@ class PicaRenderBackend {
 
     virtual bool SubmitPicaDraw(
         const PicaDrawView& draw, std::string* error = nullptr) = 0;
+    // Optional preparation probe. Between BeginPicaDrawProbe() (true when
+    // supported) and EndPicaDrawProbe(), SubmitPicaDraw records nothing: it
+    // only starts the missing shader and pipeline builds of the draw on
+    // background workers, so the builds of all the new draws of a frame run
+    // in parallel instead of one after another during the frame. End waits
+    // for the shader builds started since Begin and returns true when there
+    // were any (a second probe then starts the pipelines that needed them).
+    // Rendering never depends on a probe; it only moves work earlier.
+    virtual bool BeginPicaDrawProbe() { return false; }
+    virtual bool EndPicaDrawProbe() { return false; }
+    // After a probed SubmitPicaDraw: it started a shader build, so the draw
+    // needs another probe round once that is done.
+    virtual bool PicaDrawProbeNeedsAnotherRound() const { return false; }
     virtual bool SubmitPicaDisplayTransfer(
         const PicaDisplayTransferView& transfer,
         std::string* error = nullptr) = 0;
