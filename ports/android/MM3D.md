@@ -5,8 +5,30 @@ come from the OoT3D port (see [README](README.md) and [INTRO](INTRO.md)), which
 itself only reaches title-intro bring-up. Nothing here has been built or run on a
 device yet. Expect to fix errors at each step below.
 
-Target device: Android 17, Vulkan 1.3, arm64-v8a. Build host: Linux x64 with
-NDK r29, CMake >= 3.30, Ninja, JDK 17, Gradle 8.13 and SDK 35.
+Target device: Android 17, Vulkan 1.3, arm64-v8a, **Mali GPU**. Build host: Linux
+x64 with NDK r29, CMake >= 3.30, Ninja, JDK 17, Gradle 8.13 and SDK 35.
+
+The OoT3D port was only measured on an Adreno 830. Whether the renderer's
+capability negotiation, shader compilation and render-pass behaviour work on Mali
+is unknown, so check the GPU before spending hours on the title build.
+
+## Step 0: GPU check (minutes, no ROM needed)
+
+1. Enable USB debugging on the phone and confirm `adb devices -l` lists it.
+2. Cross-build only the probes (they do not need the translated title):
+   `ANDROID_NDK_HOME=... TRIAEVUM_BUILD_DIR=$HOME/mm3d-android-build/probe scripts/build-android-native.sh`
+3. Copy `triaevum_android_nri_probe` (from that build directory; if it is not at
+   the top level, look for it with `find`) and the NDK's arm64
+   `libc++_shared.so` (under `toolchains/llvm/prebuilt/*/sysroot/usr/lib/aarch64-linux-android/`)
+   to a private folder:
+   `adb push <files> /data/local/tmp/mm3d-probe/`
+4. Run it, never on the Linux host:
+   `adb shell 'cd /data/local/tmp/mm3d-probe && chmod +x triaevum_android_nri_probe && LD_LIBRARY_PATH=. ./triaevum_android_nri_probe'`
+
+Success only means NRI created a Vulkan device and graphics queue (README,
+"Device Verification"). It does not test rendering, shaders or speed. If it fails,
+keep the output: it names what the Mali driver lacks. Also useful: the Vulkan
+extension list from an app such as Vulkan Caps Viewer, and the phone model/chip.
 
 ## Flow
 
