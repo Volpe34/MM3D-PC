@@ -1,67 +1,89 @@
-# Majora's Mask 3D on Android (work in progress)
+# Building MM3D for Android
 
-Status: **untested scaffolding.** The Android host, NRI/Vulkan renderer and APK
-come from the OoT3D port (see [README](README.md) and [INTRO](INTRO.md)), which
-itself only reaches title-intro bring-up. Nothing here has been built or run on a
-device yet. Expect to fix errors at each step below.
+The Android build has two native parts. The runtime uses SDL2 and NRI/Vulkan. The title module is compiled from code translated from your decrypted Majora's Mask 3D USA v1.1 dump. Gradle packages both into a debug APK.
 
-Target device: Android 17, Vulkan 1.3, arm64-v8a, **Mali GPU**. Build host: Linux
-x64 with NDK r29, CMake >= 3.30, Ninja, JDK 17, Gradle 8.13 and SDK 35.
+Run the build commands below **on a Linux x86-64 PC**. On Bazzite, run them inside an Ubuntu Distrobox. Install SDK Platform 35, NDK r29, JDK 17, Gradle 8.13, CMake 3.30 or newer, Ninja, Python 3, and ADB first. Adjust the SDK and NDK paths to match your installation.
 
-The OoT3D port was only measured on an Adreno 830. Whether the renderer's
-capability negotiation, shader compilation and render-pass behaviour work on Mali
-is unknown, so check the GPU before spending hours on the title build.
+## 1. Prepare the private inputs
 
-## Step 0: GPU check (minutes, no ROM needed)
+Run the [upstream PC Setup](https://github.com/Volpe34/MM3D-PC) with your own decrypted USA v1.1 dump. Use the resulting installation directory, which contains `work/`, `game/`, `resources/`, and `process-manifest.json`. The Android build uses `aot_program.json`, `mm3d_functions.json`, and `code_thumbfree.bin` from `work/`.
 
-1. Enable USB debugging on the phone and confirm `adb devices -l` lists it.
-2. Cross-build only the probes (they do not need the translated title):
-   `ANDROID_NDK_HOME=... TRIAEVUM_BUILD_DIR=$HOME/mm3d-android-build/probe scripts/build-android-native.sh`
-3. Copy `triaevum_android_nri_probe` (from that build directory; if it is not at
-   the top level, look for it with `find`) and the NDK's arm64
-   `libc++_shared.so` (under `toolchains/llvm/prebuilt/*/sysroot/usr/lib/aarch64-linux-android/`)
-   to a private folder:
-   `adb push <files> /data/local/tmp/mm3d-probe/`
-4. Run it, never on the Linux host:
-   `adb shell 'cd /data/local/tmp/mm3d-probe && chmod +x triaevum_android_nri_probe && LD_LIBRARY_PATH=. ./triaevum_android_nri_probe'`
+In the root of the Android fork, set these paths in the same terminal you will use for the other commands:
 
-Success only means NRI created a Vulkan device and graphics queue (README,
-"Device Verification"). It does not test rendering, shaders or speed. If it fails,
-keep the output: it names what the Mali driver lacks. Also useful: the Vulkan
-extension list from an app such as Vulkan Caps Viewer, and the phone model/chip.
+```bash
+export ANDROID_HOME="$HOME/Android/Sdk"
+export ANDROID_NDK_HOME="$HOME/triaevum-android-tools/android-ndk-r29"
+export MM3D_INSTALL="/absolute/path/to/your/prepared-mm3d-installation"
+export MM3D_WORK="$MM3D_INSTALL/work"
+export MM3D_BUILD="$HOME/mm3d-android-build"
+```
 
-## Flow
+## 2. Compile the title and the runtime
 
-1. **On the PC**, run the normal MM3D Setup with your own USA v1.1 ROM. That
-   translates the code and leaves a work directory (`aot_program.json`,
-   `mm3d_functions.json`, `code_thumbfree.bin`) plus the install folder
-   (`process-manifest.json`, `game/`, `resources/`). The translation is host
-   independent; only the final compile differs.
-2. **Compile the title for ARM64** (the long step, tens of minutes):
-   `ANDROID_NDK_HOME=... MM3D_WORK=<work dir> scripts/build-android-mm3d.sh`.
-   It emits the generated sources with `tools/mm3d/mm3d_emit_title_sources.py`
-   (same generator parameters as the desktop build) and cross-compiles them with
-   `ports/android/native`.
-3. **Runtime and APK**: the runtime target, `tools/android/stage_native_app.py`
-   and `gradle :app:assembleDebug` commands are the ones in
-   [INTRO.md, Build Boundaries](INTRO.md#build-boundaries). The root runtime
-   target already contains the MM3D sources.
-4. **Private data**:
-   `python3 tools/android/prepare_mm3d_data.py --installation <PC install> --output <staging>`
-   then copy it to `/sdcard/Android/data/org.triaevum.android/files` as described
-   in INTRO.md ("Private Inputs And Verification").
+```bash
+TRIAEVUM_BUILD_DIR="$MM3D_BUILD/title" bash scripts/build-android-mm3d.sh
 
-## Known gaps
+cmake -S ports/android/runtime -B "$MM3D_BUILD/runtime" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+  -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release
+cmake --build "$MM3D_BUILD/runtime" --target oot3d_native_game --parallel 2
+```
 
-- No touch overlay wired in: the controls library is not connected to the live
-  game, so a Bluetooth/USB gamepad is needed for now.
-- No ROM import on the device; the game data is staged with adb.
-- MM3D-specific F1 panels, cheats, save states (about 450 MB per slot) and the
-  shader tour have not been looked at for Android.
-- The setup's shader corpus is built on the PC GPU. Pipelines compile on first
-  use on the phone, so expect stutter until the NRI pipeline cache warms up.
-- Performance on this title is unknown. Even OoT3D on Adreno 830 runs near
-  real time only in places.
+The runtime target name comes from the shared TriAevum code. Use separate build directories for the title and the runtime.
 
-Do not publish or commit ROMs, generated sources, `libtriaevum_title_aot.so` or
-the staged data directory.
+## 3. Package the APK
+
+```bash
+python3 tools/android/stage_native_app.py \
+  --runtime-build "$MM3D_BUILD/runtime" \
+  --title-module "$MM3D_BUILD/title/libtriaevum_title_aot.so" \
+  --ndk "$ANDROID_NDK_HOME" --output "$MM3D_BUILD/apk-libs"
+
+gradle -p ports/android :app:assembleDebug \
+  -PtriaevumSdlSource="$MM3D_BUILD/runtime/_deps/sdl2-src" \
+  -PtriaevumNativeStage="$MM3D_BUILD/apk-libs" \
+  -PtriaevumApplicationIdSuffix=.mm3d --no-daemon --max-workers=2
+```
+
+The SDL path must point to the same SDL2 source used by the native build. The APK is written to `ports/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+## 4. Install and launch
+
+Enable USB debugging, connect and unlock the phone, and accept the ADB prompt. Run these commands on the PC:
+
+```bash
+adb devices -l
+adb install -r ports/android/app/build/outputs/apk/debug/app-debug.apk
+
+python3 tools/android/prepare_mm3d_data.py \
+  --installation "$MM3D_INSTALL" --output "$MM3D_BUILD/mm3d-staged"
+```
+
+The staging directory must be new. On a fresh install, open the app once to create its data directory. It may close because the launch profile is not there yet. Then copy the staged files and reopen:
+
+```bash
+MM3D_APP_DATA=/sdcard/Android/data/org.triaevum.android.mm3d/files
+MM3D_ACTIVITY=org.triaevum.android.mm3d/org.triaevum.android.TriAevumActivity
+
+adb shell am start -W -n "$MM3D_ACTIVITY"
+adb shell am force-stop org.triaevum.android.mm3d
+adb shell mkdir -p "$MM3D_APP_DATA/resources"
+adb push "$MM3D_BUILD/mm3d-staged/." "$MM3D_APP_DATA/"
+adb shell am start -W -n "$MM3D_ACTIVITY"
+```
+
+Use the data transfer on a fresh profile. For APK updates, reinstall with `adb install -r` and keep the existing data. The separate package ID keeps the MM3D data apart from OoT3D Recomp.
+
+## Diagnostics
+
+From the PC, read the native logs with ADB:
+
+```bash
+adb shell cat "$MM3D_APP_DATA/logs/native-stdout.log"
+adb shell cat "$MM3D_APP_DATA/logs/native-stderr.log"
+```
+
+For a GPU test without a ROM, see [Device Verification](README.md#device-verification). The standalone NRI device probe checks device and queue creation. The `triaevum_android_nri_present_probe` NativeActivity library also exercises swapchain creation, drawing with SPIR-V shaders, and presentation when packaged in a probe APK.
+
+Keep the ROM, generated title sources and libraries, debug APK containing the title, and staged game data out of the public repository.
