@@ -1014,6 +1014,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     float mCurrentNoiseScale = 1.0f;
     bool mInitialized = false;
     bool mSwapchainDirty = false;
+#ifdef __ANDROID__
+    bool mSwapchainIdleTimedOut = false;
+#endif
     bool mFrameActive = false;
     bool mRenderPassActive = false;
     bool mOverlayRenderPassActive = false;

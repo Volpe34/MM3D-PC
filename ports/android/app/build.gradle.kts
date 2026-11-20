@@ -5,11 +5,13 @@ dependencies { testImplementation("junit:junit:4.13.2") }
 // Native compilation is a separate incremental build, never a Gradle side effect.
 val sdlSource = providers.gradleProperty("triaevumSdlSource")
 val nativeStage = providers.gradleProperty("triaevumNativeStage")
+val applicationSuffix = providers.gradleProperty("triaevumApplicationIdSuffix")
 android {
     namespace = "org.triaevum.android"
     compileSdk = 35
     defaultConfig {
         applicationId = "org.triaevum.android"
+        if (applicationSuffix.isPresent) applicationIdSuffix = applicationSuffix.get()
         minSdk = 29
         targetSdk = 35
         versionCode = 1

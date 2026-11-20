@@ -82,6 +82,10 @@ graphs/
 
 # Build results
 [Dd]ebug/
+!/runtime/three_ds_recomp/include/ship/debug/
+!/runtime/three_ds_recomp/src/ship/debug/
+!/runtime/three_ds_recomp/include/fast/debug/
+!/runtime/three_ds_recomp/src/fast/debug/
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
@@ -93,6 +97,8 @@ bld/
 [Bb]in/
 [Oo]bj/
 [Ll]og/
+!/runtime/three_ds_recomp/include/three_ds_recomp/legacy/log/
+!/runtime/three_ds_recomp/src/legacy_compat/log/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/

@@ -1327,7 +1327,13 @@ void GfxRenderingAPIVulkan::RenderImGuiDrawData(ImDrawData* drawData) {
 }
 
 void GfxRenderingAPIVulkan::OnResize() {
+#ifdef __ANDROID__
+    // SDL can report a resize even when Android keeps the same Vulkan surface.
+    // Check at the next frame, after SDL has updated the drawable dimensions.
+    mSwapchainSuboptimal.store(true);
+#else
     mSwapchainDirty = true;
+#endif
 }
 
 bool GfxRenderingAPIVulkan::PublishSceneView(
@@ -1478,6 +1484,10 @@ bool GfxRenderingAPIVulkan::ApplyPresentationSettings(
                 "SDL rejected the requested fullscreen flavor");
         }
         mVsyncEnabled = value.VSync;
+#ifdef __ANDROID__
+        SPDLOG_WARN("Android Vulkan swapchain: applying presentation settings {}x{}, mode {}, VSync {}",
+                    value.Width, value.Height, value.WindowMode, value.VSync);
+#endif
         mSwapchainDirty = true;
         RecreateSwapchain();
         if (mSwapchainDirty || mSwapchainImages.size() < 2U) {
@@ -1906,6 +1916,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
         Oot3d::ResolveInternalResolutionScale(graphicsSettings);
     mSpatialAaMode = aaPolicy.SpatialAaMode;
     if (mVsyncEnabled != graphicsSettings.VSync) {
+#ifdef __ANDROID__
+        SPDLOG_WARN("Android Vulkan swapchain: VSync changed to {}", graphicsSettings.VSync);
+#endif
         mVsyncEnabled = graphicsSettings.VSync;
         mSwapchainDirty = true;
     }
@@ -1921,10 +1934,18 @@ void GfxRenderingAPIVulkan::StartFrame() {
         ApplyNativePicaSampleCount(requestedSampleCount);
     }
     if (mPresentSwapchainDirty.exchange(false)) {
+#ifdef __ANDROID__
+        SPDLOG_WARN("Android Vulkan swapchain: asynchronous present reported out of date");
+#endif
         mSwapchainDirty = true;
     }
     if (mSwapchainSuboptimal.exchange(false) && !mSwapchainDirty) {
         mSwapchainDirty = SwapchainSurfaceChanged();
+#ifdef __ANDROID__
+        if (mSwapchainDirty) {
+            SPDLOG_WARN("Android Vulkan swapchain: surface capabilities changed");
+        }
+#endif
     }
     const auto presentError = static_cast<VkResult>(mPresentError.exchange(VK_SUCCESS));
     if (presentError != VK_SUCCESS) {
@@ -2026,6 +2047,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
             return;
         }
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef __ANDROID__
+            SPDLOG_WARN("Android Vulkan swapchain: acquire reported out of date");
+#endif
             mSwapchainDirty = true;
             return;
         }
@@ -2262,6 +2286,9 @@ void GfxRenderingAPIVulkan::FinishRender() {
             present = vkQueuePresentKHR(mPresentQueue, &presentInfo);
         }
         if (present == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef __ANDROID__
+            SPDLOG_WARN("Android Vulkan swapchain: present reported out of date");
+#endif
             mSwapchainDirty = true;
         } else if (present == VK_SUBOPTIMAL_KHR) {
             mSwapchainSuboptimal.store(true);
@@ -2301,6 +2328,12 @@ void GfxRenderingAPIVulkan::UpdateFramebufferParameters(int fbId, uint32_t width
         // Real window changes still invalidate through OnResize/OUT_OF_DATE.
         const auto extent = ChooseExtent(QuerySwapchainSupport(mPhysicalDevice).Capabilities);
         if (extent.width != mSwapchainExtent.width || extent.height != mSwapchainExtent.height) {
+#ifdef __ANDROID__
+            if (!mSwapchainDirty) {
+                SPDLOG_WARN("Android Vulkan swapchain: framebuffer update changed extent from {}x{} to {}x{}",
+                            mSwapchainExtent.width, mSwapchainExtent.height, extent.width, extent.height);
+            }
+#endif
             mSwapchainDirty = true;
         }
     }
@@ -5064,7 +5097,21 @@ void GfxRenderingAPIVulkan::RecreateSwapchain() {
     }
     WaitForAllPresents();
     StopPresentWorker();
-    CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(recreate swapchain)");
+    const VkResult idle = vkDeviceWaitIdle(mDevice);
+#ifdef __ANDROID__
+    if (idle == VK_TIMEOUT) {
+        if (!mSwapchainIdleTimedOut) {
+            SPDLOG_WARN("Android Vulkan swapchain: GPU idle wait timed out at drawable {}x{}", width, height);
+            mSwapchainIdleTimedOut = true;
+        }
+        // Keep the old resources alive and retry once the app has pumped its
+        // window events. GPU work may still reference the swapchain.
+        mSwapchainDirty = true;
+        return;
+    }
+    mSwapchainIdleTimedOut = false;
+#endif
+    CheckVk(idle, "vkDeviceWaitIdle(recreate swapchain)");
     // Native PICA targets are offscreen scene resources, not swapchain
     // resources. Preserve them (and CACAO's depth bindings) across presentation
     // mode changes; their own reset path handles genuine scene invalidation.

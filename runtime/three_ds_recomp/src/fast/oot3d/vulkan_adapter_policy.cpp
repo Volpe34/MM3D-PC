@@ -47,7 +47,9 @@ VulkanQueueTopologyPlan ResolveVulkanQueueTopology(
     // A separate present queue flashes on the qualified Wayland WSI, even with
     // inline host dispatch. Keep rendering/presentation ordered on one queue;
     // this adds no host fence or queue-idle wait and leaves other surfaces alone.
-    if (mode == VulkanPresentDispatchMode::Automatic && videoDriver == "wayland")
+    // Android's release-image path can time out with a separate queue on Mali.
+    if (mode == VulkanPresentDispatchMode::Automatic &&
+        (videoDriver == "wayland" || videoDriver == "Android"))
         mode = VulkanPresentDispatchMode::GraphicsQueue;
     VulkanQueueTopologyPlan plan;
     plan.GraphicsFamily = graphicsFamily;

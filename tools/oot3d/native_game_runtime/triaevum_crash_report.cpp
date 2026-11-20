@@ -16,7 +16,8 @@
 #include <thread>
 #include <vector>
 
-#if defined(__linux__) || defined(__APPLE__)
+// Android uses its platform crash handler and tombstones.
+#if (defined(__linux__) && !defined(__ANDROID__)) || defined(__APPLE__)
 #include <execinfo.h>
 #include <fcntl.h>
 #include <sys/utsname.h>

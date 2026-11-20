@@ -43,6 +43,16 @@ if(TRIAEVUM_ANDROID_BUILD_NRI)
     FetchContent_MakeAvailable(nri)
     add_executable(triaevum_android_nri_probe nri_probe.cpp)
     target_link_libraries(triaevum_android_nri_probe PRIVATE NRI ${CMAKE_DL_LIBS} log)
+
+    set(TRIAEVUM_ANDROID_NATIVE_APP_GLUE
+        "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
+    add_library(triaevum_android_nri_present_probe SHARED
+        nri_android_present_probe.cpp
+        "${TRIAEVUM_ANDROID_NATIVE_APP_GLUE}/android_native_app_glue.c")
+    target_include_directories(triaevum_android_nri_present_probe PRIVATE
+        "${TRIAEVUM_ANDROID_NATIVE_APP_GLUE}")
+    target_link_libraries(triaevum_android_nri_present_probe PRIVATE
+        NRI ${CMAKE_DL_LIBS} android log)
 endif()
 
 set(TRIAEVUM_TRANSLATED_TITLE_DIR "" CACHE PATH "Verified translated title sources (publisher only)")
